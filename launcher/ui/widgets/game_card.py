@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from launcher.core.games import Game
 from launcher.services import artwork
 from launcher.ui.theme import restyle
+from launcher.ui.widgets.elide import ElidingLabel
 
 
 class GameCard(QFrame):
@@ -80,9 +81,9 @@ class GameCard(QFrame):
         name_row = QHBoxLayout()
         name_row.setSpacing(4)
 
-        self._name_label = QLabel(self.game.name)
+        self._name_label = ElidingLabel(self.game.name)
         self._name_label.setObjectName("gameNameLabel")
-        self._name_label.setMaximumWidth(self.CARD_WIDTH - 50)
+        self._name_label.setFixedWidth(self.CARD_WIDTH - 50)
         name_row.addWidget(self._name_label)
 
         self._fav_button = QPushButton()

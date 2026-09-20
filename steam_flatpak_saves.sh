@@ -1,7 +1,20 @@
 #!/bin/bash
 
 STEAM_COMPATDATA="$HOME/.var/app/com.valvesoftware.Steam/.steam/steam/steamapps/compatdata"
-MASTER_PREFIX="$(cd "$(dirname "$0")" && pwd)/Prefix"
+LAUNCHER_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Same prefix resolution the launcher uses: an explicit path wins, then
+# .prefix-name, then the default. Previously this was hardcoded to
+# ./Prefix and ignored .prefix-name entirely.
+if [ -n "$1" ]; then
+    MASTER_PREFIX="$1"
+else
+    PREFIX_NAME="Prefix"
+    if [ -f "$LAUNCHER_DIR/.prefix-name" ]; then
+        read -r PREFIX_NAME < "$LAUNCHER_DIR/.prefix-name"
+    fi
+    MASTER_PREFIX="$LAUNCHER_DIR/$PREFIX_NAME"
+fi
 DEST_USER="$MASTER_PREFIX/pfx/drive_c/users/steamuser"
 
 mkdir -p "$DEST_USER/AppData/Local"
