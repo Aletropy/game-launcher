@@ -74,6 +74,16 @@ class Paths:
         return self.base / "backups"
 
     @property
+    def saves_dir(self) -> Path:
+        """The shared save store.
+
+        Must stay under the launcher directory: games resolve its
+        symlinks inside the Steam Flatpak container, which can see this
+        directory but not arbitrary paths elsewhere.
+        """
+        return self.base / "Saves"
+
+    @property
     def artwork_dir(self) -> Path:
         return self.base / "launcher" / "artwork"
 

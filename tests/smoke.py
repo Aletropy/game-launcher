@@ -723,6 +723,243 @@ def playtime_accumulates_from_finished_sessions() -> None:
 
 
 # --------------------------------------------------------------------------
+# shared save store
+# --------------------------------------------------------------------------
+
+
+def _make_prefix(ctx, name: str, files: dict[str, str], *, age: float = 0.0):
+    """A prefix with a Proton-shaped drive_c and some save data."""
+    from launcher.domain.save_layout import LINKS
+
+    drive_c = ctx.paths.base / name / "pfx" / "drive_c"
+    for spec in LINKS:
+        (drive_c / spec.in_prefix).mkdir(parents=True, exist_ok=True)
+    for relative, text in files.items():
+        path = drive_c / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        if age:
+            when = time.time() - age
+            os.utime(path, (when, when))
+    return ctx.paths.base / name
+
+
+@test
+def merge_keeps_the_newer_file_and_quarantines_the_other() -> None:
+    from launcher.services import merge
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        source, dest, conflicts = root / "s", root / "d", root / "c"
+        now = time.time()
+
+        def write(path: Path, text: str, when: float) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            os.utime(path, (when, when))
+
+        write(source / "new_only.txt", "s", now)
+        write(source / "same.txt", "same", now - 500)
+        write(dest / "same.txt", "same", now - 500)
+        write(source / "newer.txt", "source", now)
+        write(dest / "newer.txt", "dest", now - 1000)
+        write(source / "older.txt", "source", now - 1000)
+        write(dest / "older.txt", "dest", now)
+
+        plan = merge.plan_merge(source, dest)
+        assert len(plan.moves) == 1
+        assert len(plan.identical) == 1
+        assert len(plan.conflicts) == 2
+        # Planning must not touch anything.
+        assert (source / "new_only.txt").is_file()
+
+        result = merge.apply_merge(source, dest, conflicts)
+        assert result.moved == 1
+        assert result.identical_removed == 1
+        assert len(result.conflicts) == 2
+        assert not result.errors
+
+        assert (dest / "newer.txt").read_text() == "source"
+        assert (dest / "older.txt").read_text() == "dest"
+        quarantined = {p.name: p.read_text() for p in conflicts.rglob("*.txt")}
+        assert quarantined == {"newer.txt": "dest", "older.txt": "source"}, quarantined
+        # Everything left the source; nothing was deleted outright.
+        assert not list(source.rglob("*.txt"))
+
+
+@test
+def adopting_a_prefix_moves_saves_and_links_them_back() -> None:
+    with sandbox() as ctx:
+        prefix = _make_prefix(
+            ctx,
+            "Prefix",
+            {
+                "users/steamuser/Documents/My Games/save.sav": "A save",
+                "users/steamuser/AppData/Roaming/Balatro/profile": "A profile",
+                "ProgramData/Ubisoft/cfg": "A cfg",
+            },
+        )
+        store = ctx.save_store
+        assert store.reachable, "store must sit inside the launcher folder"
+
+        plan = store.plan_adopt(prefix)
+        assert plan.can_run
+        assert plan.total_moves == 3
+        # A dry run writes nothing.
+        assert not store.root.exists() or not any(store.root.rglob("*.sav"))
+
+        result = store.adopt(prefix)
+        assert result.ok, result.errors
+        assert len(result.linked) == 6
+        assert store.status(prefix).fully_linked
+
+        save = prefix / "pfx/drive_c/users/steamuser/Documents/My Games/save.sav"
+        assert save.read_text() == "A save", "not readable through the link"
+        assert (store.root / "Documents/My Games/save.sav").is_file()
+        assert save.parent.parent.is_symlink() or save.parent.parent.parent.is_symlink()
+
+
+@test
+def two_prefixes_share_one_copy_of_the_saves() -> None:
+    with sandbox() as ctx:
+        first = _make_prefix(
+            ctx, "Prefix", {"users/steamuser/Documents/shared.txt": "from A"}
+        )
+        second = _make_prefix(
+            ctx,
+            "prefixes/Lies-of-P",
+            {"users/steamuser/Documents/only_b.txt": "B only"},
+        )
+        store = ctx.save_store
+        store.adopt(first)
+        store.adopt(second)
+
+        assert store.status(first).fully_linked
+        assert store.status(second).fully_linked
+
+        # A file written through one prefix is visible through the other.
+        (first / "pfx/drive_c/users/steamuser/Documents/new.txt").write_text("hi")
+        via_second = second / "pfx/drive_c/users/steamuser/Documents/new.txt"
+        assert via_second.read_text() == "hi"
+        assert (store.root / "Documents/only_b.txt").read_text() == "B only"
+
+
+@test
+def repair_recovers_saves_proton_wrote_into_a_replaced_link() -> None:
+    """wineboot replaces the symlink with a real directory on update."""
+    with sandbox() as ctx:
+        prefix = _make_prefix(
+            ctx, "Prefix", {"users/steamuser/Documents/old.sav": "old"}
+        )
+        store = ctx.save_store
+        store.adopt(prefix)
+
+        documents = prefix / "pfx/drive_c/users/steamuser/Documents"
+        documents.unlink()
+        documents.mkdir(parents=True)
+        (documents / "written_by_proton.sav").write_text("new save")
+
+        assert store.verify(prefix), "the broken link was not noticed"
+
+        result = store.repair(prefix)
+        assert result.repaired == ["Documents"], result.repaired
+        assert result.recovered_files == 1
+        assert not result.errors
+        assert store.status(prefix).fully_linked
+        # Both the old and the newly written save survive.
+        names = sorted(p.name for p in (store.root / "Documents").iterdir())
+        assert names == ["old.sav", "written_by_proton.sav"], names
+
+
+@test
+def releasing_a_prefix_gives_it_its_own_copy_again() -> None:
+    with sandbox() as ctx:
+        prefix = _make_prefix(
+            ctx, "Prefix", {"users/steamuser/Documents/save.sav": "data"}
+        )
+        store = ctx.save_store
+        store.adopt(prefix)
+
+        result = store.release(prefix)
+        assert not result.errors, result.errors
+        assert store.status(prefix).unlinked
+
+        documents = prefix / "pfx/drive_c/users/steamuser/Documents"
+        assert documents.is_dir() and not documents.is_symlink()
+        assert (documents / "save.sav").read_text() == "data"
+        # The store keeps its copy too; releasing is not a move back.
+        assert (store.root / "Documents/save.sav").read_text() == "data"
+
+
+@test
+def backups_of_a_linked_prefix_hold_real_data() -> None:
+    """A backup must follow the links, not archive dangling symlinks."""
+    with sandbox() as ctx:
+        prefix = _make_prefix(
+            ctx, "Prefix", {"users/steamuser/Documents/save.sav": "REAL DATA"}
+        )
+        ctx.save_store.adopt(prefix)
+        assert ctx.save_store.status(prefix).fully_linked
+
+        backup = ctx.saves.create_backup("Test Game", "")
+        found = list(backup.path.rglob("save.sav"))
+        assert found, "the save did not make it into the backup"
+        assert not found[0].is_symlink(), "backed up a symlink, not the data"
+        assert found[0].read_text() == "REAL DATA"
+
+
+@test
+def a_store_outside_the_launcher_folder_is_refused() -> None:
+    """Games resolve these links inside the Steam Flatpak container.
+
+    A store the container cannot see would leave every save folder
+    looking empty in-game, so it is rejected rather than half-built.
+    """
+    from launcher.domain.save_layout import store_is_reachable
+
+    with sandbox() as ctx:
+        assert store_is_reachable(ctx.paths.saves_dir, ctx.paths.base)
+        assert not store_is_reachable(Path.home() / "elsewhere", ctx.paths.base)
+
+
+@test
+def launching_repairs_broken_save_links_first() -> None:
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        prefix = _make_prefix(
+            ctx,
+            "prefixes/Alpha",
+            {"users/steamuser/Documents/save.sav": "data"},
+        )
+        ctx.save_store.adopt(prefix)
+
+        exe = ctx.paths.base / "alpha.exe"
+        exe.write_bytes(b"\0")
+        lib = LibraryController(ctx)
+        lib.add_game(
+            GameConfig(name="Alpha", executable=str(exe), prefix="prefixes/Alpha")
+        )
+        lib.reload()
+
+        documents = prefix / "pfx/drive_c/users/steamuser/Documents"
+        documents.unlink()
+        documents.mkdir(parents=True)
+        (documents / "after_update.sav").write_text("written by proton")
+
+        launched: list[str] = []
+        ctx.processes.launch = lambda n: (launched.append(n), True)[1]
+        assert lib.launch("Alpha")
+
+        assert launched == ["Alpha"]
+        assert ctx.save_store.status(prefix).fully_linked, "link was not repaired"
+        assert (
+            ctx.save_store.root / "Documents/after_update.sav"
+        ).read_text() == "written by proton"
+
+
+# --------------------------------------------------------------------------
 # ui
 # --------------------------------------------------------------------------
 

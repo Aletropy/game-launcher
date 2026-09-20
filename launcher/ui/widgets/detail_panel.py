@@ -27,13 +27,14 @@ from launcher.domain.models import (
     format_playtime,
 )
 from launcher.services.artwork import EXTENSIONS, ArtworkService
+from launcher.services.save_store import SaveStore
 from launcher.ui.theme import restyle
 from launcher.ui.widgets.collapsible import CollapsibleSection
 from launcher.ui.widgets.elide import ElidingLabel
 from launcher.ui.widgets.hero_banner import HeroBanner
 from launcher.ui.widgets.log_view import LogView
 
-_INFO_ROWS = ("Played", "Prefix", "Proton", "App ID", "Executable")
+_INFO_ROWS = ("Played", "Prefix", "Saves", "Proton", "App ID", "Executable")
 
 
 class GameDetailPanel(QWidget):
@@ -57,12 +58,14 @@ class GameDetailPanel(QWidget):
         self,
         artwork: ArtworkService,
         paths: Paths,
+        save_store: SaveStore | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("detailPanel")
         self._artwork = artwork
         self._paths = paths
+        self._save_store = save_store
         self._game: Game | None = None
         self._running = False
         self.setAcceptDrops(True)
@@ -247,6 +250,7 @@ class GameDetailPanel(QWidget):
         self._info_values["Prefix"].setText(
             prefixes.describe(game.prefix, self._paths)
         )
+        self._info_values["Saves"].setText(self._saves_summary(game))
         self._info_values["Proton"].setText(
             game.config.custom_proton_path or "Default"
         )
@@ -275,6 +279,16 @@ class GameDetailPanel(QWidget):
         self._info_values["Played"].setText(text)
         self._info_values["Played"].setVisible(visible)
         self._info_labels["Played"].setVisible(visible)
+
+    def _saves_summary(self, game: Game) -> str:
+        """Whether this game's prefix uses the shared save store."""
+        if self._save_store is None:
+            return ""
+        try:
+            prefix = prefixes.resolve(game.prefix, self._paths)
+            return self._save_store.status(prefix).summary
+        except OSError:
+            return ""
 
     def set_running(self, running: bool) -> None:
         self._running = running

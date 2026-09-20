@@ -32,6 +32,7 @@ from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask, warn
 from launcher.ui.dialogs.game_dialog import AddGameDialog
 from launcher.ui.dialogs.import_dialog import ImportGamesDialog
 from launcher.ui.dialogs.restore_dialog import RestoreBackupDialog
+from launcher.ui.dialogs.saves_dialog import SavesDialog
 from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 from launcher.ui.widgets import log_view
@@ -130,7 +131,9 @@ class MainWindow(QMainWindow):
         self._sidebar.setMaximumWidth(460)
         splitter.addWidget(self._sidebar)
 
-        self._detail = GameDetailPanel(self._ctx.artwork, self._ctx.paths)
+        self._detail = GameDetailPanel(
+            self._ctx.artwork, self._ctx.paths, self._ctx.save_store
+        )
         splitter.addWidget(self._detail)
 
         splitter.setStretchFactor(0, 0)
@@ -480,6 +483,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Restored {count} file(s).", 8000)
 
     # -- settings ------------------------------------------------------
+
+    def _open_saves(self) -> None:
+        SavesDialog(self._ctx, parent=self).exec()
+        self._lib.reload()
 
     def _open_settings(self) -> None:
         before = self._ctx.settings.get_bool("hide_missing")

@@ -198,6 +198,53 @@ winetricks against it, and backs up or restores that game's saves.
 Backups land in `backups/<game>/<timestamp>` and copy the same
 directories `repair-prefix.sh` does.
 
+## Shared saves
+
+Per-game prefixes are cheap to rebuild, but save data normally lives
+inside the prefix, so rebuilding one loses the saves and the same game
+in another prefix starts fresh. The shared store fixes that: one copy of
+the Windows user profile in `Saves/`, symlinked into every prefix.
+
+```
+Saves/
+  AppData/{Local,LocalLow,Roaming}
+  Documents/
+  Saved Games/
+  ProgramData/
+  .conflicts/<timestamp>/    losers from a merge, never deleted
+  .manifest.json
+```
+
+Six links per prefix. `AppData`'s children are linked individually
+rather than `AppData` itself, so it stays a real directory and Wine's
+own aliases keep working.
+
+**Shared Saves…** in the toolbar shows every prefix and its state.
+Sharing one previews exactly what will move before touching anything.
+Where the same file exists on both sides the newer wins and the other
+goes to `Saves/.conflicts/`; nothing is deleted. Moves within one
+filesystem are renames, so adopting 4.5 GB takes seconds.
+
+The store has to live inside the launcher folder. Games resolve these
+links *inside* the Steam Flatpak container, which can see this directory
+but not arbitrary paths elsewhere — a store outside it would make every
+save folder look empty in-game, so it is refused.
+
+`wineboot` recreates missing user folders when Proton updates and will
+replace a symlink with a real directory, quietly splitting your saves.
+The links are therefore verified before every launch; anything written
+into a replacement is merged back into the store and the link restored.
+Launching `./game-launcher.sh` directly bypasses that check.
+
+**Stop sharing** gives a prefix its own copy again. The store keeps its
+data, so this costs disk but never loses anything.
+
+Two consequences worth knowing. The whole profile is shared, so shader
+caches, anti-cheat and launcher installs are shared too — one Ubisoft
+login across prefixes, but also one corrupt `EasyAntiCheat` for
+everything. And rebuilding a prefix no longer clears bad state that
+lives in `AppData`.
+
 ## Wine prefixes
 
 By default every game shares one prefix, `./Prefix`. Writing a folder

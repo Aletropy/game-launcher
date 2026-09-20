@@ -286,6 +286,42 @@ QRadioButton::indicator:checked {
     background-color: $accent;
 }
 
+QTreeWidget, QTreeView, QListView {
+    background-color: $surface;
+    alternate-background-color: $surface;
+    color: $fg;
+    border: 1px solid $border;
+    border-radius: ${radius}px;
+    outline: none;
+}
+
+QTreeWidget::item, QTreeView::item {
+    padding: 4px 6px;
+    border: none;
+}
+
+QTreeWidget::item:hover, QTreeView::item:hover {
+    background-color: $hover;
+}
+
+QTreeWidget::item:selected, QTreeView::item:selected {
+    background-color: $raised;
+    color: $fg_bright;
+}
+
+QHeaderView::section {
+    background-color: $raised;
+    color: $fg_muted;
+    padding: 5px 8px;
+    border: none;
+    border-right: 1px solid $border;
+    border-bottom: 1px solid $border;
+}
+
+QHeaderView::section:last {
+    border-right: none;
+}
+
 QWidget#sidebar {
     background-color: $surface;
     border-right: 1px solid $border;
