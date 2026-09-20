@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import urllib.request
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 _BASE_URL = "https://www.steamgriddb.com/api/v2"

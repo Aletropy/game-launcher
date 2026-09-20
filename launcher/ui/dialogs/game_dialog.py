@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.game_manager import Game
+from launcher.core.games import Game
 
 
 class AddGameDialog(QDialog):

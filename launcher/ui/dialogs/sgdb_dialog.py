@@ -6,7 +6,7 @@ import threading
 import urllib.request
 from pathlib import Path
 
-from PySide6.QtCore import QMetaObject, Qt, Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -23,9 +23,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.game_manager import _HEROES_DIR, clear_hero_images
-from launcher.settings import get_sgdb_api_key, set_sgdb_api_key
-from launcher.steamgriddb import (
+from launcher.core.games import clear_hero_images
+from launcher.core.paths import LEGACY_HEROES_DIR
+from launcher.core.settings import get_sgdb_api_key, set_sgdb_api_key
+from launcher.services.sgdb import (
     SGDBError,
     download_image,
     get_grids,
@@ -299,7 +300,7 @@ class SGDBDialog(QDialog):
             if e in self._selected_url.lower():
                 ext = e
                 break
-        dest = _HEROES_DIR / f"{game_name}{ext}"
+        dest = LEGACY_HEROES_DIR / f"{game_name}{ext}"
         self._download_btn.setEnabled(False)
         self._status_label.setText("Downloading...")
         threading.Thread(

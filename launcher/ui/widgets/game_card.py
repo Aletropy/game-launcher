@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -16,9 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.game_manager import Game
-
-_HERO_DIR = Path(__file__).resolve().parent.parent.parent / "launcher" / "heroes"
+from launcher.core.games import Game
 
 
 class GameCard(QFrame):

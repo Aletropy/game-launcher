@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import QObject, QProcess, Signal
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_LAUNCHER_SCRIPT = _BASE_DIR / "game-launcher.sh"
+from launcher.core.paths import BASE_DIR, LAUNCHER_SCRIPT
+
 _SHELL = "bash"
 
 
@@ -35,12 +33,12 @@ class ProcessManager(QObject):
         if self.is_running(game_name):
             return False
 
-        if not _LAUNCHER_SCRIPT.is_file():
-            self.game_error.emit(game_name, f"Launcher script not found: {_LAUNCHER_SCRIPT}")
+        if not LAUNCHER_SCRIPT.is_file():
+            self.game_error.emit(game_name, f"Launcher script not found: {LAUNCHER_SCRIPT}")
             return False
 
         process = QProcess(self)
-        process.setWorkingDirectory(str(_BASE_DIR))
+        process.setWorkingDirectory(str(BASE_DIR))
         process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
 
         process.readyReadStandardOutput.connect(
@@ -54,7 +52,7 @@ class ProcessManager(QObject):
         )
 
         self._processes[game_name] = process
-        process.start(_SHELL, [str(_LAUNCHER_SCRIPT), game_name])
+        process.start(_SHELL, [str(LAUNCHER_SCRIPT), game_name])
         if game_name not in self._processes:
             # errorOccurred already fired synchronously; the entry was cleaned
             # up by _on_process_error and no finished signal will follow.

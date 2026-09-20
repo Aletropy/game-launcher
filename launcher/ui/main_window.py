@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.game_manager import (
+from launcher.core.games import (
     Game,
     add_game,
     remove_game,
@@ -23,12 +23,16 @@ from launcher.game_manager import (
     toggle_favorite,
     update_game,
 )
-from launcher.process_manager import ProcessManager
-from launcher.settings import get_sgdb_api_key, get_skip_missing_check, set_skip_missing_check
-from launcher.ui.add_game_dialog import AddGameDialog
+from launcher.core.settings import (
+    get_sgdb_api_key,
+    get_skip_missing_check,
+    set_skip_missing_check,
+)
+from launcher.services.process import ProcessManager
 from launcher.ui.debug_tab import DebugTab
-from launcher.ui.game_grid import GameGrid
-from launcher.ui.sgdb_dialog import SGDBDialog
+from launcher.ui.dialogs.game_dialog import AddGameDialog
+from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
+from launcher.ui.widgets.game_grid import GameGrid
 
 
 class MainWindow(QMainWindow):

@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-_SETTINGS_DIR = Path.home() / ".config" / "launcher"
-_SETTINGS_PATH = _SETTINGS_DIR / "settings.json"
+from launcher.core.paths import CONFIG_DIR, SETTINGS_PATH
 
 
 def load_settings() -> dict:
     """Load settings from disk."""
-    if _SETTINGS_PATH.is_file():
+    if SETTINGS_PATH.is_file():
         try:
-            return json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
+            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
@@ -21,8 +19,8 @@ def load_settings() -> dict:
 
 def save_settings(settings: dict) -> None:
     """Persist settings to disk."""
-    _SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
-    _SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
 
 
 def get_sgdb_api_key() -> str:

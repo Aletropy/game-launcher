@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QWidgetItem,
 )
 
-from launcher.game_manager import Game
-from launcher.ui.game_card import GameCard
+from launcher.core.games import Game
+from launcher.ui.widgets.game_card import GameCard
 
 
 class GameGrid(QWidget):

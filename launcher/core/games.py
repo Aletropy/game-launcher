@@ -8,12 +8,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from launcher.config_parser import load, save
-
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_GAMES_DIR = _BASE_DIR / "games"
-_HEROES_DIR = _BASE_DIR / "launcher" / "heroes"
-_FAVORITES_PATH = Path.home() / ".config" / "launcher" / "favorites.json"
+from launcher.core.config import load, save
+from launcher.core.paths import FAVORITES_PATH, GAMES_DIR, LEGACY_HEROES_DIR
 
 # Extensions a hero image may be stored with, in lookup order.
 _HERO_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
@@ -48,7 +44,7 @@ class Game:
     def hero_path(self) -> Path | None:
         """Return the hero image path if it exists, else None."""
         for ext in _HERO_EXTS:
-            p = _HEROES_DIR / f"{self.name}{ext}"
+            p = LEGACY_HEROES_DIR / f"{self.name}{ext}"
             if p.is_file():
                 return p
         return None
@@ -61,9 +57,9 @@ class Game:
 
 def _load_favorites() -> set[str]:
     """Load the set of favorited game names."""
-    if _FAVORITES_PATH.is_file():
+    if FAVORITES_PATH.is_file():
         try:
-            return set(json.loads(_FAVORITES_PATH.read_text(encoding="utf-8")))
+            return set(json.loads(FAVORITES_PATH.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError):
             return set()
     return set()
@@ -71,8 +67,8 @@ def _load_favorites() -> set[str]:
 
 def _save_favorites(favs: set[str]) -> None:
     """Persist the favorites set."""
-    _FAVORITES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _FAVORITES_PATH.write_text(json.dumps(sorted(favs), indent=2), encoding="utf-8")
+    FAVORITES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    FAVORITES_PATH.write_text(json.dumps(sorted(favs), indent=2), encoding="utf-8")
 
 
 def _as_list(value: str | list[str] | None) -> list[str]:
@@ -119,9 +115,9 @@ def scan_games() -> list[Game]:
     """Scan the games/ directory and return all discovered games."""
     favs = _load_favorites()
     games: list[Game] = []
-    if not _GAMES_DIR.is_dir():
+    if not GAMES_DIR.is_dir():
         return games
-    for conf in sorted(_GAMES_DIR.glob("*.conf")):
+    for conf in sorted(GAMES_DIR.glob("*.conf")):
         games.append(_game_from_conf(conf, favs))
     return games
 
@@ -139,7 +135,7 @@ def toggle_favorite(game_name: str) -> bool:
 
 def remove_game(game_name: str) -> bool:
     """Delete a game's .conf file. Returns True on success."""
-    conf = _GAMES_DIR / f"{game_name}.conf"
+    conf = GAMES_DIR / f"{game_name}.conf"
     if conf.is_file():
         conf.unlink()
         return True
@@ -185,8 +181,8 @@ def _build_data(game: Game) -> dict[str, str | list[str]]:
 
 def add_game(game: Game) -> Path:
     """Create a new .conf file for the game. Returns the path."""
-    _GAMES_DIR.mkdir(parents=True, exist_ok=True)
-    conf_path = _GAMES_DIR / f"{game.name}.conf"
+    GAMES_DIR.mkdir(parents=True, exist_ok=True)
+    conf_path = GAMES_DIR / f"{game.name}.conf"
     game.conf_path = conf_path
     save(conf_path, _build_data(game))
     return conf_path
@@ -204,7 +200,7 @@ def clear_hero_images(game_name: str, keep: Path | None = None) -> None:
     behind would shadow the new artwork.
     """
     for ext in _HERO_EXTS:
-        p = _HEROES_DIR / f"{game_name}{ext}"
+        p = LEGACY_HEROES_DIR / f"{game_name}{ext}"
         if keep is not None and p == keep:
             continue
         if p.is_file():
@@ -216,11 +212,11 @@ def clear_hero_images(game_name: str, keep: Path | None = None) -> None:
 
 def set_hero_image(game_name: str, source_path: str) -> Path:
     """Copy an image into heroes/ with the correct name. Returns dest path."""
-    _HEROES_DIR.mkdir(parents=True, exist_ok=True)
+    LEGACY_HEROES_DIR.mkdir(parents=True, exist_ok=True)
     ext = Path(source_path).suffix.lower()
     if ext not in _HERO_EXTS:
         ext = ".png"
-    dest = _HEROES_DIR / f"{game_name}{ext}"
+    dest = LEGACY_HEROES_DIR / f"{game_name}{ext}"
     shutil.copy2(source_path, dest)
     clear_hero_images(game_name, keep=dest)
     return dest

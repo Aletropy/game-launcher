@@ -28,7 +28,7 @@ def test(fn):
     global _PASSED
     try:
         fn()
-    except Exception:
+    except Exception:  # noqa: BLE001 - a test runner must catch everything
         _FAILURES.append(f"{fn.__name__}\n{traceback.format_exc()}")
         print(f"  FAIL  {fn.__name__}")
     else:
