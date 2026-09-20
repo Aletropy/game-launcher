@@ -24,3 +24,9 @@ __pycache__/
 
 # Release archives
 /dist/
+
+# Your game library is personal: absolute paths into your home
+# directory, and nobody else's business when this is published.
+# games/ itself is tracked via .gitkeep so a clone still has the folder.
+/games/*
+!/games/.gitkeep
