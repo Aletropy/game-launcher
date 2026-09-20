@@ -18,6 +18,37 @@ appears in your menu. Nothing is installed system-wide and nothing needs
 root. Uninstalling leaves your games, prefixes, artwork and settings
 alone.
 
+## Building a release
+
+```bash
+./package.sh              # dist/game-launcher-<version>.tar.gz
+./package.sh --no-check   # skip the test and lint gate
+./package.sh --clean      # remove dist/
+```
+
+The archive carries the source, the scripts, the icon and the docs, with
+an empty `games/` folder. It leaves out the virtualenv, Wine prefixes,
+artwork, save backups, caches and your own games, and a check refuses to
+build if any of those sneak in.
+
+`game-launcher.sh` ships as a plain executable file and is verified
+byte-identical to the original. It is never bundled or rewritten: it
+rewrites its own source with `sed` on `"$0"`, so it has to stay a
+readable file on disk to work at all.
+
+Packaging runs the tests, ruff and mypy first, then extracts the
+finished archive and checks it imports, so a broken build cannot ship.
+Archives are reproducible — two builds of the same tree are
+byte-identical.
+
+To install elsewhere:
+
+```bash
+tar xzf game-launcher-2.0.0.tar.gz
+cd game-launcher-2.0.0
+./install.sh
+```
+
 Games can also be launched straight from the shell:
 
 ```bash

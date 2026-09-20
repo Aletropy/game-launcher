@@ -21,3 +21,6 @@ __pycache__/
 
 # Stored artwork is user data, like the prefixes
 /launcher/artwork/
+
+# Release archives
+/dist/
