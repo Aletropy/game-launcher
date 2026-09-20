@@ -8,6 +8,7 @@ from PySide6.QtCore import QObject, QProcess, Signal
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 _LAUNCHER_SCRIPT = _BASE_DIR / "game-launcher.sh"
+_SHELL = "bash"
 
 
 class ProcessManager(QObject):
@@ -45,15 +46,19 @@ class ProcessManager(QObject):
         process.readyReadStandardOutput.connect(
             lambda gn=game_name: self._on_output(gn)
         )
-        process.readyReadStandardError.connect(
-            lambda gn=game_name: self._on_error(gn)
-        )
         process.finished.connect(
             lambda code, status, gn=game_name: self._on_finished(gn, code)
         )
+        process.errorOccurred.connect(
+            lambda err, gn=game_name: self._on_process_error(gn, err)
+        )
 
         self._processes[game_name] = process
-        process.start("bash", [str(_LAUNCHER_SCRIPT), game_name])
+        process.start(_SHELL, [str(_LAUNCHER_SCRIPT), game_name])
+        if game_name not in self._processes:
+            # errorOccurred already fired synchronously; the entry was cleaned
+            # up by _on_process_error and no finished signal will follow.
+            return False
         self.game_started.emit(game_name)
         return True
 
@@ -74,14 +79,20 @@ class ProcessManager(QObject):
         if text:
             self.game_output.emit(game_name, text)
 
-    def _on_error(self, game_name: str) -> None:
+    def _on_process_error(self, game_name: str, error: QProcess.ProcessError) -> None:
         proc = self._processes.get(game_name)
         if proc is None:
             return
-        raw = bytes(proc.readAllStandardError().data())
-        text = raw.decode("utf-8", errors="replace")
-        if text:
-            self.game_error.emit(game_name, text)
+        if error == QProcess.ProcessError.FailedToStart:
+            # No finished signal follows a failed start, so release the slot
+            # here or the game stays "running" for the rest of the session.
+            self._processes.pop(game_name, None)
+            self.game_error.emit(
+                game_name, f"Failed to start game-launcher.sh: {proc.errorString()}"
+            )
+            self.game_finished.emit(game_name, -1)
+        else:
+            self.game_error.emit(game_name, proc.errorString())
 
     def _on_finished(self, game_name: str, exit_code: int) -> None:
         self._processes.pop(game_name, None)

@@ -15,6 +15,9 @@ _GAMES_DIR = _BASE_DIR / "games"
 _HEROES_DIR = _BASE_DIR / "launcher" / "heroes"
 _FAVORITES_PATH = Path.home() / ".config" / "launcher" / "favorites.json"
 
+# Extensions a hero image may be stored with, in lookup order.
+_HERO_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+
 
 @dataclass
 class Game:
@@ -44,8 +47,8 @@ class Game:
     @property
     def hero_path(self) -> Path | None:
         """Return the hero image path if it exists, else None."""
-        for ext in ("png", "jpg", "jpeg", "webp"):
-            p = _HEROES_DIR / f"{self.name}.{ext}"
+        for ext in _HERO_EXTS:
+            p = _HEROES_DIR / f"{self.name}{ext}"
             if p.is_file():
                 return p
         return None
@@ -194,10 +197,30 @@ def update_game(game: Game) -> None:
     save(game.conf_path, _build_data(game))
 
 
+def clear_hero_images(game_name: str, keep: Path | None = None) -> None:
+    """Delete stored hero images for a game, except ``keep``.
+
+    Lookup is by extension, so leaving an older file of a different extension
+    behind would shadow the new artwork.
+    """
+    for ext in _HERO_EXTS:
+        p = _HEROES_DIR / f"{game_name}{ext}"
+        if keep is not None and p == keep:
+            continue
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
 def set_hero_image(game_name: str, source_path: str) -> Path:
     """Copy an image into heroes/ with the correct name. Returns dest path."""
     _HEROES_DIR.mkdir(parents=True, exist_ok=True)
     ext = Path(source_path).suffix.lower()
+    if ext not in _HERO_EXTS:
+        ext = ".png"
     dest = _HEROES_DIR / f"{game_name}{ext}"
     shutil.copy2(source_path, dest)
+    clear_hero_images(game_name, keep=dest)
     return dest

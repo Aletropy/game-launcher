@@ -11,13 +11,32 @@ _ARRAY_KEYS = {"GAME_ARGS", "ADDITIONAL_DLLS", "extra_vars"}
 # Regex that matches a single line: KEY=value or KEY="value" or KEY=(array)
 _KEY_RE = re.compile(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.*)$")
 _ARRAY_RE = re.compile(r'^\((?P<items>.*)\)\s*$')
-_QUOTED_RE = re.compile(r'^"(?P<inner>.*)"$')
+# A double-quoted string, allowing backslash-escaped characters inside.
+_QUOTED_RE = re.compile(r'^"(?P<inner>(?:[^"\\]|\\.)*)"$')
+_ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+
+# Characters bash still expands inside double quotes; they must be backslash
+# escaped because game-launcher.sh sources these files.
+_ESCAPE_RE = re.compile(r'([\\"`$])')
+# Only the sequences we write are unescaped again, so a lone backslash in an
+# older hand-written conf survives untouched.
+_UNESCAPE_RE = re.compile(r'\\([\\"`$])')
+
+
+def _escape(value: str) -> str:
+    """Escape a value so bash reads it back verbatim from "..."."""
+    return _ESCAPE_RE.sub(r"\\\1", value)
+
+
+def _unescape(value: str) -> str:
+    """Reverse :func:`_escape`."""
+    return _UNESCAPE_RE.sub(r"\1", value)
 
 
 def _unquote(raw: str) -> str:
-    """Strip surrounding quotes from a value if present."""
+    """Strip surrounding quotes from a value if present, undoing escapes."""
     m = _QUOTED_RE.match(raw)
-    return m.group("inner") if m else raw
+    return _unescape(m.group("inner")) if m else raw
 
 
 def _parse_array(raw: str) -> list[str]:
@@ -28,7 +47,10 @@ def _parse_array(raw: str) -> list[str]:
     inner = m.group("items").strip()
     if not inner:
         return []
-    return [_unquote(item.strip()) for item in inner.split('" "')]
+    items = _ITEM_RE.findall(inner)
+    if items:
+        return [_unescape(item) for item in items]
+    return [_unquote(item.strip()) for item in inner.split()]
 
 
 def load(conf_path: str | Path) -> dict[str, str | list[str]]:
@@ -64,13 +86,14 @@ def save(conf_path: str | Path, data: dict[str, str | list[str]]) -> None:
     """Write a .conf file from a dict.
 
     Writes scalar values as KEY="value" and array values as KEY=("a" "b").
+    Values are escaped so that sourcing the file in bash cannot execute them.
     """
     lines: list[str] = []
     for key, value in data.items():
         if isinstance(value, list):
-            escaped = " ".join(f'"{item}"' for item in value)
+            escaped = " ".join(f'"{_escape(item)}"' for item in value)
             lines.append(f'{key}=({escaped})')
         else:
-            lines.append(f'{key}="{value}"')
+            lines.append(f'{key}="{_escape(str(value))}"')
 
     Path(conf_path).write_text("\n".join(lines) + "\n", encoding="utf-8")

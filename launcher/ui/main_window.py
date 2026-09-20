@@ -118,22 +118,27 @@ class MainWindow(QMainWindow):
     def _load_games(self) -> None:
         self._games = scan_games()
         missing = [g for g in self._games if not g.executable_exists]
-        if missing:
-            if get_skip_missing_check():
-                for g in missing:
-                    remove_game(g.name)
-            else:
-                self._handle_missing_executables(missing)
-            self._games = [g for g in self._games if g.executable_exists]
+        if missing and not get_skip_missing_check():
+            removed = self._handle_missing_executables(missing)
+            if removed:
+                self._games = [g for g in self._games if g.name not in removed]
 
         self._game_grid.set_games(self._games)
         self._apply_filter()
 
-    def _handle_missing_executables(self, missing: list[Game]) -> None:
+    def _handle_missing_executables(self, missing: list[Game]) -> set[str]:
+        """Ask about each game whose executable is gone.
+
+        Only configurations the user actually confirmed are deleted; the names
+        of those are returned. Everything else stays on disk and in the library
+        so that a game on an unplugged drive is not silently lost.
+        """
+        removed: set[str] = set()
         remove_all = False
         for game in missing:
             if remove_all:
-                remove_game(game.name)
+                if remove_game(game.name):
+                    removed.add(game.name)
                 continue
             msg = QMessageBox(self)
             msg.setWindowTitle("Game Not Found")
@@ -149,15 +154,17 @@ class MainWindow(QMainWindow):
             msg.exec()
             clicked = msg.clickedButton()
             if clicked == yes_btn:
-                remove_game(game.name)
+                if remove_game(game.name):
+                    removed.add(game.name)
             elif clicked == yes_all_btn:
                 remove_all = True
-                remove_game(game.name)
+                if remove_game(game.name):
+                    removed.add(game.name)
             elif clicked == skip_btn:
+                # "Don't ask again" silences the prompt; it does not delete.
                 set_skip_missing_check(True)
-                for g in missing:
-                    remove_game(g.name)
-                return
+                break
+        return removed
 
     def _apply_filter(self) -> None:
         text = self._search_edit.text()
@@ -166,10 +173,9 @@ class MainWindow(QMainWindow):
         self._game_grid.filter_cards(text, favs_only, fav_names)
 
     def _launch_game(self, game_name: str) -> None:
-        self._process_mgr.launch(game_name)
-        self._game_grid.set_running(game_name, True)
-        self._debug_tab.add_game(game_name)
-        # Switch to debug tab to show output
+        if not self._process_mgr.launch(game_name):
+            return
+        # _on_game_started has already marked the card and opened the tab.
         self._tabs.setCurrentWidget(self._debug_tab)
 
     def _toggle_favorite(self, game_name: str) -> None:
@@ -205,7 +211,7 @@ class MainWindow(QMainWindow):
                     clicked = msg.clickedButton()
                     if clicked == yes_btn:
                         self._fetch_artwork(game.name)
-                    elif clicked != no_btn:
+                    elif clicked is not None and clicked != no_btn:
                         if clicked.text() == "Yes to All":
                             self._fetch_artwork_all = True
                             self._fetch_artwork(game.name)
@@ -244,7 +250,7 @@ class MainWindow(QMainWindow):
         if clicked == yes_btn:
             remove_game(game_name)
             self._load_games()
-        elif clicked != no_btn:
+        elif clicked is not None and clicked != no_btn:
             if clicked.text() == "Yes to All":
                 self._remove_all = True
                 remove_game(game_name)

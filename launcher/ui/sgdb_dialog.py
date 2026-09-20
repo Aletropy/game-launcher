@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.game_manager import _HEROES_DIR
+from launcher.game_manager import _HEROES_DIR, clear_hero_images
 from launcher.settings import get_sgdb_api_key, set_sgdb_api_key
 from launcher.steamgriddb import (
     SGDBError,
@@ -316,6 +316,9 @@ class SGDBDialog(QDialog):
             self._sig_download_error.emit(f"Download failed: {e}")
 
     def _on_download_done(self, path: Path) -> None:
+        # The saved extension is guessed from the response, so it can differ
+        # from the one in dest; drop any older file that would shadow it.
+        clear_hero_images(path.stem, keep=path)
         self._download_btn.setEnabled(True)
         self._status_label.setText("Artwork downloaded and applied!")
         self.artwork_downloaded.emit(path)
