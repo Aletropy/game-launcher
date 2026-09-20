@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from launcher.core.config import load, save
-from launcher.core.paths import FAVORITES_PATH, GAMES_DIR, LEGACY_HEROES_DIR
-
-# Extensions a hero image may be stored with, in lookup order.
-_HERO_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+from launcher.core.paths import FAVORITES_PATH, GAMES_DIR
+from launcher.services import artwork
 
 
 @dataclass
@@ -42,12 +39,8 @@ class Game:
 
     @property
     def hero_path(self) -> Path | None:
-        """Return the hero image path if it exists, else None."""
-        for ext in _HERO_EXTS:
-            p = LEGACY_HEROES_DIR / f"{self.name}{ext}"
-            if p.is_file():
-                return p
-        return None
+        """Return the card artwork path if it exists, else None."""
+        return artwork.path_for(self.name, artwork.GRID.name)
 
     @property
     def conf_name(self) -> str:
@@ -134,12 +127,18 @@ def toggle_favorite(game_name: str) -> bool:
 
 
 def remove_game(game_name: str) -> bool:
-    """Delete a game's .conf file. Returns True on success."""
+    """Delete a game's .conf file and its artwork. Returns True on success."""
     conf = GAMES_DIR / f"{game_name}.conf"
-    if conf.is_file():
-        conf.unlink()
-        return True
-    return False
+    if not conf.is_file():
+        return False
+    conf.unlink()
+    # Without this the artwork outlives the game forever.
+    artwork.remove(game_name)
+    favs = _load_favorites()
+    if game_name in favs:
+        favs.discard(game_name)
+        _save_favorites(favs)
+    return True
 
 
 def _build_data(game: Game) -> dict[str, str | list[str]]:
@@ -193,30 +192,3 @@ def update_game(game: Game) -> None:
     save(game.conf_path, _build_data(game))
 
 
-def clear_hero_images(game_name: str, keep: Path | None = None) -> None:
-    """Delete stored hero images for a game, except ``keep``.
-
-    Lookup is by extension, so leaving an older file of a different extension
-    behind would shadow the new artwork.
-    """
-    for ext in _HERO_EXTS:
-        p = LEGACY_HEROES_DIR / f"{game_name}{ext}"
-        if keep is not None and p == keep:
-            continue
-        if p.is_file():
-            try:
-                p.unlink()
-            except OSError:
-                pass
-
-
-def set_hero_image(game_name: str, source_path: str) -> Path:
-    """Copy an image into heroes/ with the correct name. Returns dest path."""
-    LEGACY_HEROES_DIR.mkdir(parents=True, exist_ok=True)
-    ext = Path(source_path).suffix.lower()
-    if ext not in _HERO_EXTS:
-        ext = ".png"
-    dest = LEGACY_HEROES_DIR / f"{game_name}{ext}"
-    shutil.copy2(source_path, dest)
-    clear_hero_images(game_name, keep=dest)
-    return dest

@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import urllib.request
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
@@ -22,12 +23,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.core.games import clear_hero_images
-from launcher.core.paths import LEGACY_HEROES_DIR
 from launcher.core.settings import get_sgdb_api_key, set_sgdb_api_key
+from launcher.services import artwork
 from launcher.services.sgdb import (
     SGDBError,
-    download_image,
+    download_bytes,
     get_grids,
     get_heroes,
     search_games,
@@ -295,31 +295,33 @@ class SGDBDialog(QDialog):
         if not game_name:
             warn(self, "Missing Name", "No game name available.")
             return
-        ext = ".png"
-        for e in (".jpg", ".jpeg", ".webp", ".gif"):
-            if e in self._selected_url.lower():
-                ext = e
-                break
-        dest = LEGACY_HEROES_DIR / f"{game_name}{ext}"
+        art = artwork.HERO.name if self._type_combo.currentText() == "Heroes" else artwork.GRID.name
         self._download_btn.setEnabled(False)
         self._status_label.setText("Downloading...")
         threading.Thread(
-            target=self._do_download, args=(self._selected_url, dest), daemon=True
+            target=self._do_download,
+            args=(self._selected_url, game_name, art),
+            daemon=True,
         ).start()
 
-    def _do_download(self, url: str, dest: Path) -> None:
+    def _do_download(self, url: str, game_name: str, art: str) -> None:
         try:
-            result = download_image(url, dest)
-            self._sig_download_done.emit(result)
+            # Fetch the bytes here, but store on the GUI thread: the artwork
+            # service writes and invalidates the shared pixmap cache.
+            data = download_bytes(url)
+            self._sig_download_done.emit((game_name, art, data))
         except SGDBError as e:
             self._sig_download_error.emit(str(e))
         except Exception as e:
             self._sig_download_error.emit(f"Download failed: {e}")
 
-    def _on_download_done(self, path: Path) -> None:
-        # The saved extension is guessed from the response, so it can differ
-        # from the one in dest; drop any older file that would shadow it.
-        clear_hero_images(path.stem, keep=path)
+    def _on_download_done(self, payload: object) -> None:
+        game_name, art, data = cast("tuple[str, str, bytes]", payload)
+        try:
+            path = artwork.store(game_name, art, data)
+        except OSError as e:
+            self._show_error(f"Could not save artwork: {e}")
+            return
         self._download_btn.setEnabled(True)
         self._status_label.setText("Artwork downloaded and applied!")
         self.artwork_downloaded.emit(path)

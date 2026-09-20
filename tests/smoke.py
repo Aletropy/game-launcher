@@ -188,6 +188,86 @@ def qt_can_write_the_artwork_formats() -> None:
 
 
 # --------------------------------------------------------------------------
+# artwork service
+# --------------------------------------------------------------------------
+
+
+@test
+def artwork_slugs_never_collide() -> None:
+    from launcher.services import artwork
+
+    names = [
+        "Schedule I",
+        "Warhammer 40,000",
+        "Warhammer 40 000",
+        "Caf\u00e9 Ni\u00f1o",
+        "S.T.A.L.K.E.R.",
+        "!!!",
+        "",
+    ]
+    slugs = [artwork.slug(n) for n in names]
+    assert len(set(slugs)) == len(slugs), dict(zip(names, slugs, strict=True))
+    # Plain names stay readable rather than being hashed.
+    assert artwork.slug("Schedule I") == "schedule-i"
+
+
+@test
+def artwork_store_shrinks_and_replaces() -> None:
+    from PySide6.QtGui import QImage, QImageWriter
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from launcher.services import artwork
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        artwork.ARTWORK_DIR = tmp / "artwork"
+        artwork.invalidate()
+
+        # A 600x900 source, the shape SteamGridDB actually serves.
+        src = tmp / "src.png"
+        image = QImage(600, 900, QImage.Format.Format_RGB32)
+        for y in range(900):
+            for x in range(0, 600, 4):
+                image.setPixel(x, y, (x * 7 + y * 13) & 0xFFFFFF)
+        QImageWriter(str(src), b"png").write(image)
+
+        dest = artwork.store("Test Game", artwork.GRID.name, src)
+        assert dest.is_file()
+        assert dest.stat().st_size < src.stat().st_size, "re-encode did not shrink"
+
+        loaded = QImage(str(dest))
+        assert loaded.width() <= artwork.GRID.max_width
+        assert loaded.height() <= artwork.GRID.max_height
+
+        # Storing again must not leave a second file under another extension.
+        artwork.store("Test Game", artwork.GRID.name, src)
+        files = list((artwork.ARTWORK_DIR / artwork.GRID.name).iterdir())
+        assert len(files) == 1, files
+
+        assert artwork.remove("Test Game") >= 1
+        assert artwork.path_for("Test Game", artwork.GRID.name) is None
+
+
+@test
+def artwork_cache_returns_the_same_pixmap() -> None:
+    from PySide6.QtCore import QSize
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from launcher.services import artwork
+
+    key = "Schedule I"
+    if artwork.path_for(key) is None:
+        return  # no artwork on disk to exercise
+    size = QSize(200, 160)
+    first = artwork.pixmap(key, artwork.GRID.name, size, expand=True)
+    second = artwork.pixmap(key, artwork.GRID.name, size, expand=True)
+    assert first is not None
+    assert first is second, "cache miss on an unchanged file"
+
+
+# --------------------------------------------------------------------------
 
 
 def main() -> int:

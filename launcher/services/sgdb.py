@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
-from pathlib import Path
 
 _BASE_URL = "https://www.steamgriddb.com/api/v2"
 _HEADERS = {"User-Agent": "Mozilla/5.0"}
@@ -57,34 +56,17 @@ def get_grids(game_id: int, api_key: str) -> list[dict]:
     return result.get("data", [])
 
 
-def download_image(url: str, dest: Path) -> Path:
-    """Download an image from a URL and save it to dest. Returns dest path."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
+def download_bytes(url: str) -> bytes:
+    """Download an image and return its bytes.
+
+    The caller decides where it lands; the artwork service re-encodes it
+    rather than storing whatever the API happened to serve.
+    """
     req = urllib.request.Request(url)
     for k, v in _HEADERS.items():
         req.add_header(k, v)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            ext = _guess_ext(resp.headers.get("Content-Type", ""), url)
-            final_dest = dest.with_suffix(ext)
-            final_dest.write_bytes(resp.read())
-            return final_dest
+            return bytes(resp.read())
     except (urllib.error.URLError, OSError) as e:
         raise SGDBError(f"Failed to download image: {e}") from e
-
-
-def _guess_ext(content_type: str, url: str) -> str:
-    """Guess file extension from content type or URL."""
-    ct_map = {
-        "image/png": ".png",
-        "image/jpeg": ".jpg",
-        "image/webp": ".webp",
-        "image/gif": ".gif",
-        "image/apng": ".png",
-    }
-    if content_type in ct_map:
-        return ct_map[content_type]
-    for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-        if ext in url.lower():
-            return ext
-    return ".png"

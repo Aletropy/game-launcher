@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -15,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from launcher.core.games import Game
+from launcher.services import artwork
 from launcher.ui.theme import restyle
 
 
@@ -57,21 +57,16 @@ class GameCard(QFrame):
         self._hero_label.setFixedHeight(self.HERO_HEIGHT)
         self._hero_label.setObjectName("heroLabel")
 
-        hero_path = self.game.hero_path
-        if hero_path and hero_path.is_file():
-            pixmap = QPixmap(str(hero_path))
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(
-                    self.CARD_WIDTH,
-                    self.HERO_HEIGHT,
-                    Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                self._hero_label.setPixmap(scaled)
-            else:
-                self._set_placeholder()
-        else:
+        art = artwork.pixmap(
+            self.game.name,
+            artwork.GRID.name,
+            QSize(self.CARD_WIDTH, self.HERO_HEIGHT),
+            expand=True,
+        )
+        if art is None:
             self._set_placeholder()
+        else:
+            self._hero_label.setPixmap(art)
 
         hero_layout.addWidget(self._hero_label)
         layout.addWidget(hero_container)
