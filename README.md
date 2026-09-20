@@ -55,13 +55,21 @@ alone.
 ./package.sh --clean      # remove dist/
 ```
 
-It produces three artifacts:
+It produces four artifacts:
 
 | | |
 |---|---|
+| `*-bundle.tar.gz` | one `.tar.gz` to send by mail, chat or a USB stick |
 | `*.run` | one file; run it once to install or upgrade in place |
 | `*.tar.gz` | the same payload as a plain archive |
 | `*-src.tar.gz` | the whole project, to publish anywhere |
+
+The bundle is what to send someone directly. Mail and chat clients
+routinely block executables, so it wraps the `.run` in a `.tar.gz`
+alongside a plain-text `INSTALL.txt`, the source archive, the README and
+`SHA256SUMS`. The instructions say to `chmod +x` the installer, and it
+also runs as `bash game-launcher-<version>.run`, so a transport that
+drops the executable bit cannot break it.
 
 The `.run` is the release archive appended to `installer/header.sh`
 after a `__PAYLOAD_BELOW__` marker, with the payload's SHA-256 baked

@@ -318,6 +318,172 @@ build_source_archive() {
     printf '%s\n' "$archive"
 }
 
+build_bundle() {
+    local name="$1" installer="$2" source_archive="$3"
+    head_ "Building the send-anywhere bundle"
+
+    local staging bundle
+    staging="$(mktemp -d)" || return 1
+    local root="$staging/$name"
+    mkdir -p "$root" || return 1
+
+    cp "$installer" "$root/" || return 1
+    [ -n "$source_archive" ] && [ -f "$source_archive" ] &&
+        cp "$source_archive" "$root/"
+    cp "$SOURCE_DIR/README.md" "$root/" 2>/dev/null
+
+    # Plain text, because the person opening this may be reading it in a
+    # mail client with no Markdown and no terminal yet.
+    cat > "$root/INSTALL.txt" <<EOF
+Game Launcher $VERSION
+======================
+
+A launcher for running Windows games through Proton inside the Steam
+Flatpak container, for Linux.
+
+INSTALL
+-------
+
+  1. Extract this archive if you have not already:
+
+         tar xzf $name-bundle.tar.gz
+
+  2. Make the installer executable and run it:
+
+         cd $name
+         chmod +x $name.run
+         ./$name.run
+
+That is all. It checks what it needs, creates its own Python
+environment, and adds a "game-launcher" command and a menu entry.
+It never asks for root and installs nothing system-wide.
+
+If you already have an older copy, run it from inside that folder and
+it upgrades in place, keeping your games, Wine prefixes, artwork and
+settings.
+
+OPTIONS
+-------
+
+  ./$name.run --check         check requirements, change nothing
+  ./$name.run --target DIR    install into a specific folder
+  ./$name.run --yes           do not ask anything
+  ./$name.run --extract DIR   unpack the files without installing
+  ./$name.run --help          full usage
+
+REQUIREMENTS
+------------
+
+  Linux, bash, and Python 3.11 or newer.
+  Steam installed as a Flatpak, to actually run games.
+  Optional: gamescope, winetricks.
+
+Run with --check first if you want to see what is missing.
+
+WHAT ELSE IS IN HERE
+--------------------
+
+  $name.run        the installer described above
+  $name-src.tar.gz the complete source, if you want to read or
+                   modify it, or publish it yourself
+  README.md        full documentation
+  SHA256SUMS       checksums for the files above
+
+VERIFYING
+---------
+
+  sha256sum -c SHA256SUMS
+
+UNINSTALLING
+------------
+
+  ./install.sh --uninstall
+
+from the folder it installed into. Your games, prefixes and settings
+are left alone.
+EOF
+
+    (cd "$root" && sha256sum ./* > SHA256SUMS 2>/dev/null &&
+        sed -i 's|\./||' SHA256SUMS)
+    ok "installer, source, docs and checksums"
+
+    mkdir -p "$DIST_DIR"
+    bundle="$DIST_DIR/$name-bundle.tar.gz"
+    rm -f "$bundle"
+    if tar --sort=name \
+           --mtime="@${SOURCE_DATE_EPOCH:-$(date +%s)}" \
+           --owner=0 --group=0 --numeric-owner \
+           -czf "$bundle" -C "$staging" "$name" 2>/dev/null ||
+       tar -czf "$bundle" -C "$staging" "$name"
+    then
+        ok "bundle written"
+    else
+        err "could not build the bundle"
+        rm -rf "$staging"
+        return 1
+    fi
+    rm -rf "$staging"
+
+    printf '%s\n' "$bundle"
+}
+
+test_bundle() {
+    local bundle="$1" name="$2"
+    head_ "Testing the bundle"
+
+    local scratch
+    scratch="$(mktemp -d)" || return 1
+    trap 'rm -rf "$scratch"' RETURN
+
+    if tar xzf "$bundle" -C "$scratch"; then
+        ok "extracts cleanly"
+    else
+        err "could not extract the bundle"
+        return 1
+    fi
+
+    local root="$scratch/$name"
+    local item
+    for item in "$name.run" INSTALL.txt SHA256SUMS README.md; do
+        if [ ! -f "$root/$item" ]; then
+            err "missing from the bundle: $item"
+            return 1
+        fi
+    done
+    ok "contains the installer, instructions, checksums and docs"
+
+    if (cd "$root" && sha256sum -c SHA256SUMS >/dev/null 2>&1); then
+        ok "checksums verify"
+    else
+        err "checksums do not verify"
+        return 1
+    fi
+
+    # tar preserves the executable bit, but INSTALL.txt tells people to
+    # chmod +x anyway because some transports drop it.
+    if [ -x "$root/$name.run" ]; then
+        ok "the installer is executable after extraction"
+    else
+        warn "the installer lost its executable bit; INSTALL.txt covers it"
+    fi
+
+    # It must work even if the transport dropped the bit.
+    chmod -x "$root/$name.run"
+    if bash "$root/$name.run" --version >/dev/null 2>&1; then
+        ok "works via bash even without the executable bit"
+    else
+        err "the installer does not run"
+        return 1
+    fi
+    chmod +x "$root/$name.run"
+
+    if "$root/$name.run" --check >/dev/null 2>&1; then
+        ok "--check passes from the extracted bundle"
+    else
+        warn "--check reported missing dependencies on this machine"
+    fi
+}
+
 build_run_installer() {
     local archive="$1" name="$2"
     head_ "Building the one-run installer"
@@ -508,10 +674,16 @@ test_install "$ARCHIVE" "$NAME" || exit 1
 INSTALLER="$(build_run_installer "$ARCHIVE" "$NAME" | tail -n1)" || exit 1
 test_run_installer "$INSTALLER" "$NAME" || exit 1
 SOURCE_ARCHIVE="$(build_source_archive "$NAME" | tail -n1)" || exit 1
+BUNDLE="$(build_bundle "$NAME" "$INSTALLER" "${SOURCE_ARCHIVE:-}" | tail -n1)" || exit 1
+test_bundle "$BUNDLE" "$NAME" || exit 1
 
 cat <<EOF
 
 ${C_OK}Done.${C_OFF}
+
+  $BUNDLE  ($(du -h "$BUNDLE" | cut -f1))
+      one .tar.gz to send by mail, chat or a USB stick
+      it carries the installer, the source, docs and checksums
 
   $INSTALLER  ($(du -h "$INSTALLER" | cut -f1))
       one file; run it once to install or upgrade in place
