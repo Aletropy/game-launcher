@@ -3,12 +3,20 @@
 A PySide6 launcher for running Windows games through Proton inside the
 Steam Flatpak container.
 
-## Running
+## Install
 
 ```bash
-./install.sh     # creates .venv and installs PySide6
-./run.sh         # starts the launcher
+./install.sh              # check dependencies, create the venv, install
+./install.sh --check      # report dependencies and exit, changing nothing
+./install.sh --uninstall  # remove the command and desktop entry
 ```
+
+The installer checks for Python, bash, the Steam Flatpak and the optional
+extras (gamescope, winetricks), creates `.venv`, installs PySide6, adds a
+`game-launcher` command to `~/.local/bin` and a desktop entry so the app
+appears in your menu. Nothing is installed system-wide and nothing needs
+root. Uninstalling leaves your games, prefixes, artwork and settings
+alone.
 
 Games can also be launched straight from the shell:
 
@@ -19,29 +27,85 @@ Games can also be launched straight from the shell:
 ```
 
 `--dry-run` prints the prefix, Proton path, app id and environment a
-launch would use. It is the quickest way to check a game's configuration
+launch would use — the quickest way to check a game's configuration
 without a running Steam Flatpak.
 
-## Layout
+## Architecture
 
 ```
 launcher/
-  app.py           entry point
-  core/            config parsing, the Game model, prefixes, settings, paths
-  services/        artwork, process management, SteamGridDB, background tasks
-  ui/              main window, widgets, dialogs, theme
-games/*.conf       one bash config per game, sourced by game-launcher.sh
-launcher/artwork/  stored artwork: grid/ hero/ icon/
-game-launcher.sh   resolves the config and runs the game via flatpak enter
+  domain/      models and rules. No Qt, no I/O, no globals.
+    models.py    GameConfig, GameStats, Game, sorting and formatting
+    config.py    reading and writing bash .conf files
+    prefixes.py  prefix resolution, mirroring game-launcher.sh
+  data/        persistence, each taking a Paths in its constructor
+    paths.py         every filesystem location, as an object
+    game_repository  games/*.conf
+    settings_store   preferences (JSON)
+    state_store      playtime, favourites, last played (SQLite)
+  services/    side effects
+    artwork/     specs, store + display cache, cleanup
+    process.py   launching games and timing sessions
+    saves.py     backing up and restoring save data
+    prefix_tools winecfg / winetricks / open folder
+    sgdb.py      SteamGridDB
+    importer.py  finding games in a folder
+    tasks.py     bounded background work
+  app/         composition root and orchestration
+    context.py           builds the object graph
+    library_controller   library state and every mutation
+    main.py              entry point
+  ui/          views, which talk to the controller and nothing else
 ```
 
-`tests/smoke.py` is a dependency-free suite covering config round-trips,
-prefix resolution against the real shell script, the artwork service and
-headless window construction:
+The rule that keeps this honest: nothing below `app/` imports a global,
+and `ui/` never touches a repository. `AppContext.create(paths)` builds
+everything in one place, which is what lets a test point the whole
+application at a temporary directory:
+
+```python
+with tempfile.TemporaryDirectory() as d:
+    ctx = AppContext.for_testing(Path(d))
+```
+
+`tests/smoke.py` is a dependency-free suite (33 tests) covering the
+domain, the repositories, the services, the shell script and headless UI
+construction:
 
 ```bash
 .venv/bin/python tests/smoke.py
+.venv/bin/ruff check launcher tests
+.venv/bin/mypy launcher
 ```
+
+## Using it
+
+| | |
+|---|---|
+| Select a game | Shows its details. Selecting never launches. |
+| Play | The Play button, a double-click, Enter, or `Ctrl+P` |
+| Sort | By name, recently played, most played or recently added |
+| Search | `Ctrl+F` |
+| Add / import | `Ctrl+N` / `Ctrl+I` |
+| Edit / settings | `Ctrl+E` / `Ctrl+,` |
+| Refresh | `F5` |
+
+Playtime is recorded per session. A session shorter than 20 seconds is
+treated as a failed launch and does not count, so a game that crashes on
+startup does not inflate the number.
+
+**Importing** scans a folder for `.exe` files and guesses which are
+games: installers, crash handlers, redistributables and anything inside
+a Wine prefix are listed but unticked, and where a folder holds several
+executables the largest is preferred. Review the list before importing.
+
+**Artwork** can come from SteamGridDB (needs an API key, set in
+Settings) or by dragging an image onto the detail panel.
+
+**The ⋯ menu** on a selected game opens its prefix, runs winecfg or
+winetricks against it, and backs up or restores that game's saves.
+Backups land in `backups/<game>/<timestamp>` and copy the same
+directories `repair-prefix.sh` does.
 
 ## Wine prefixes
 
@@ -63,32 +127,31 @@ the game runs inside the Steam Flatpak container via `flatpak enter`, so
 such a path may not be visible there without a `flatpak override`.
 
 Moving a game to its own prefix does not carry over its saves or
-registry; it will look freshly installed. `repair-prefix.sh` and
-`steam_flatpak_saves.sh` can copy save data between prefixes.
+registry; it will look freshly installed. Use the ⋯ → Saves menu, or
+`repair-prefix.sh`, to move save data.
 
-## Artwork
+`launcher/domain/prefixes.py` and `resolve_conf_overrides()` in
+`game-launcher.sh` implement the same rules, and a smoke test runs both
+to prove they still agree.
+
+## Artwork storage
 
 Artwork is stored once per game per type, scaled to the size it is shown
 at and re-encoded — a 600×900 source of ~800 KB becomes roughly 35 KB.
 
-**Clean Up Artwork…** in the toolbar scans what is stored and offers to:
+**Clean Up Artwork…** scans what is stored and offers to resize oversized
+files, drop duplicates, and delete artwork belonging to games no longer
+in the library. Each is a separate checkbox, the dialog shows exactly
+what each reclaims, and nothing is deleted until you confirm. Re-encoding
+replaces the original.
 
-- resize anything larger than it needs to be,
-- drop duplicates of the same game stored under different file types,
-- delete artwork belonging to games no longer in the library.
-
-Each is a separate checkbox, the dialog shows exactly what each reclaims,
-and nothing is deleted until you confirm. Re-encoding replaces the
-original. The offer appears once, the first time it would help; after
-that use the toolbar button.
-
-Removing a game now deletes its artwork with it.
+Removing a game deletes its artwork and recorded state with it.
 
 ## Per-game configuration
 
 `games/<name>.conf` is sourced by `game-launcher.sh`. The filename stem
 is the game's identity — renaming in the launcher moves the config, the
-artwork and the favourite together.
+artwork, the favourite and the playtime together.
 
 | Key | Effect |
 |---|---|
@@ -104,3 +167,14 @@ artwork and the favourite together.
 
 Values are escaped when written, so paths containing quotes, `$` or
 backticks are safe even though the file is `source`d.
+
+## Where things live
+
+| | |
+|---|---|
+| Games | `games/*.conf` |
+| Artwork | `launcher/artwork/{grid,hero,icon}/` |
+| Prefixes | `Prefix/`, `prefixes/<game>/`, or wherever you point them |
+| Save backups | `backups/<game>/<timestamp>/` |
+| Preferences | `~/.config/launcher/settings.json` |
+| Playtime and favourites | `~/.local/share/launcher/state.db` |
