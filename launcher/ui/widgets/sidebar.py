@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -99,7 +99,16 @@ class LibrarySidebar(QWidget):
         self._list.setUniformItemSizes(False)
         self._list.setAlternatingRowColors(False)
         self._list.currentItemChanged.connect(self._on_current_changed)
-        self._list.itemActivated.connect(self._on_activated)
+        # Explicitly double-click, never itemActivated: that signal fires
+        # on a SINGLE click when the desktop uses single-click activation
+        # (KDE's default), which would launch a game just by selecting it.
+        self._list.itemDoubleClicked.connect(self._on_activated)
+
+        # Enter still launches, but only when the list has focus.
+        for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            shortcut = QShortcut(QKeySequence(key), self._list)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(self._launch_current)
         layout.addWidget(self._list, stretch=1)
 
         button_row = QHBoxLayout()
@@ -255,3 +264,8 @@ class LibrarySidebar(QWidget):
     def _on_activated(self, item: QListWidgetItem) -> None:
         # Double-click or Enter launches; a plain selection never does.
         self.launch_requested.emit(str(item.data(Qt.ItemDataRole.UserRole)))
+
+    def _launch_current(self) -> None:
+        item = self._list.currentItem()
+        if item is not None:
+            self._on_activated(item)

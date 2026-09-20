@@ -60,6 +60,31 @@ def sandbox():
             context.close()
 
 
+#: Qt objects that must outlive the widgets pointing at them.
+_KEEP_ALIVE: list[object] = []
+
+
+def _single_click_style():
+    """A style whose item views activate on a single click.
+
+    KDE's default. Without forcing it, a test running under Fusion
+    cannot reproduce the single-click-launch bug at all.
+
+    Built with no base style on purpose: QProxyStyle takes ownership of
+    whatever it is given, and handing it the application's shared style
+    makes Qt delete that style on teardown.
+    """
+    from PySide6.QtWidgets import QProxyStyle, QStyle
+
+    class Proxy(QProxyStyle):
+        def styleHint(self, hint, option=None, widget=None, data=None):
+            if hint == QStyle.StyleHint.SH_ItemView_ActivateItemOnSingleClick:
+                return 1
+            return super().styleHint(hint, option, widget, data)
+
+    return Proxy()
+
+
 def pump(predicate, timeout: float = 5.0) -> None:
     app = qt_app()
     start = time.time()
@@ -734,6 +759,66 @@ def window_builds_and_selecting_never_launches() -> None:
         window._detail._play_btn.click()
         app.processEvents()
         assert launched == ["Beta"], launched
+        window.close()
+
+
+@test
+def a_single_click_selects_but_never_launches() -> None:
+    """Clicking a row must only select it.
+
+    Regression: the list used itemActivated, which Qt fires on a SINGLE
+    click when the desktop activates items on single click (KDE's
+    default), so selecting a game launched it.
+    """
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from launcher.app.main import build_window
+    from launcher.domain.models import GameConfig
+
+    app = qt_app()
+    with sandbox() as ctx:
+        exe_dir = ctx.paths.base / "exes"
+        exe_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("Alpha", "Beta"):
+            exe = exe_dir / f"{name}.exe"
+            exe.write_bytes(b"\0")
+            ctx.games.add(GameConfig(name=name, executable=str(exe)))
+
+        window = build_window(ctx)
+        window.resize(1280, 800)
+        window.show()
+        app.processEvents()
+
+        launched: list[str] = []
+        ctx.processes.launch = lambda n: (launched.append(n), True)[1]
+
+        listing = window._sidebar._list
+        row = listing.item(1)
+        assert row is not None
+        centre = listing.visualItemRect(row).center()
+
+        # Force single-click activation, so this reproduces the bug
+        # regardless of the style the test machine happens to use.
+        # setStyle does not take ownership, so the proxy has to outlive
+        # the widget or Qt follows a dangling pointer on teardown.
+        proxy = _single_click_style()
+        _KEEP_ALIVE.append(proxy)
+        listing.setStyle(proxy)
+        QTest.mouseClick(
+            listing.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(centre.x(), centre.y())
+        )
+        app.processEvents()
+
+        assert listing.currentRow() == 1, "the click did not select the row"
+        assert launched == [], f"a single click launched {launched}"
+
+        # A double-click is the deliberate gesture, and does launch.
+        QTest.mouseDClick(
+            listing.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(centre.x(), centre.y())
+        )
+        app.processEvents()
+        assert launched, "a double click should launch"
         window.close()
 
 
