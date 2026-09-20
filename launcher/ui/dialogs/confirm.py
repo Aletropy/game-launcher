@@ -14,7 +14,7 @@ from enum import Enum, auto
 
 from PySide6.QtWidgets import QAbstractButton, QMessageBox, QWidget
 
-from launcher.core.settings import get_flag, set_flag
+from launcher.data.settings_store import SettingsStore
 
 
 class Answer(Enum):
@@ -74,12 +74,15 @@ def ask(
     icon: QMessageBox.Icon = QMessageBox.Icon.Question,
     sticky: StickyChoice | None = None,
     persist_key: str | None = None,
+    settings: SettingsStore | None = None,
 ) -> Answer:
     """Ask a question, honouring sticky and persisted answers.
 
     Returns CANCEL if the dialog was dismissed without a choice.
     """
-    if persist_key is not None and get_flag(persist_key):
+    if persist_key is not None and settings is not None and settings.get_bool(
+        persist_key
+    ):
         return Answer.DONT_ASK
     if sticky is not None:
         remembered = sticky.resolved()
@@ -104,8 +107,8 @@ def ask(
 
     if sticky is not None and chosen in (Answer.YES_ALL, Answer.NO_ALL):
         sticky.value = chosen
-    if persist_key is not None and chosen is Answer.DONT_ASK:
-        set_flag(persist_key, True)
+    if persist_key is not None and settings is not None and chosen is Answer.DONT_ASK:
+        settings.set(persist_key, True)
 
     return chosen
 

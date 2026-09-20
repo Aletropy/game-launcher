@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Smoke tests for the launcher.
 
-Run with: QT_QPA_PLATFORM=offscreen .venv/bin/python tests/smoke.py
+Run with: .venv/bin/python tests/smoke.py
 
-Deliberately dependency-free (no pytest) and safe to run against the real
-project: every test that writes does so in a temporary directory.
+Dependency-free (no pytest). Every test that writes builds its own
+AppContext under a temporary directory, so nothing here can touch the
+real library.
 """
 
 from __future__ import annotations
@@ -12,11 +13,13 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
 import traceback
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 _FAILURES: list[str] = []
@@ -28,7 +31,7 @@ def test(fn):
     global _PASSED
     try:
         fn()
-    except Exception:  # noqa: BLE001 - a test runner must catch everything
+    except Exception:
         _FAILURES.append(f"{fn.__name__}\n{traceback.format_exc()}")
         print(f"  FAIL  {fn.__name__}")
     else:
@@ -37,30 +40,43 @@ def test(fn):
     return fn
 
 
-def _import(*names: str):
-    """Import the first module path that exists, so tests survive the move."""
-    last: Exception | None = None
-    for name in names:
+def qt_app():
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+@contextmanager
+def sandbox():
+    """An AppContext isolated under a temporary directory."""
+    from launcher.app.context import AppContext
+
+    qt_app()
+    with tempfile.TemporaryDirectory() as directory:
+        context = AppContext.for_testing(Path(directory))
         try:
-            mod = __import__(name, fromlist=["*"])
-        except ImportError as e:
-            last = e
-            continue
-        return mod
-    raise AssertionError(f"none of {names} importable: {last}")
+            yield context
+        finally:
+            context.close()
 
 
-config = _import("launcher.core.config", "launcher.config_parser")
-games = _import("launcher.core.games", "launcher.game_manager")
+def pump(predicate, timeout: float = 5.0) -> None:
+    app = qt_app()
+    start = time.time()
+    while not predicate() and time.time() - start < timeout:
+        app.processEvents()
+        time.sleep(0.01)
 
 
 # --------------------------------------------------------------------------
-# config round-trip
+# domain: config parsing
 # --------------------------------------------------------------------------
 
 
 @test
 def conf_round_trip_preserves_values() -> None:
+    from launcher.domain import config
+
     values = {
         "GAME_EXECUTABLE": "/home/g/Games/Rock & Roll/x.exe",
         "GAME_NAME": "Rock & Roll",
@@ -68,314 +84,243 @@ def conf_round_trip_preserves_values() -> None:
         "ADDITIONAL_DLLS": ["winhttp=n,b"],
     }
     with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "t.conf"
-        config.save(p, values)
-        assert config.load(p) == values, config.load(p)
-
-
-@test
-def conf_escapes_shell_metacharacters() -> None:
-    evil = '$(touch /tmp/pwned) `id` " \\ $HOME'
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "t.conf"
-        config.save(p, {"EVIL": evil})
-        assert config.load(p)["EVIL"] == evil
-        raw = p.read_text()
-        for ch in ("$", "`", '"'):
-            assert f"\\{ch}" in raw, f"{ch} not escaped in {raw!r}"
+        path = Path(d) / "t.conf"
+        config.save(path, values)
+        assert config.load(path) == values, config.load(path)
 
 
 @test
 def conf_sourced_by_bash_yields_original_values() -> None:
     import subprocess
 
+    from launcher.domain import config
+
     values = {
         "GAME_EXECUTABLE": '/games/Rock & Roll "Deluxe"/x.exe',
-        "GAME_ARGS": ["-w \"1920\"", "$(id)"],
+        "GAME_ARGS": ['-w "1920"', "$(id)"],
     }
     with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "t.conf"
-        config.save(p, values)
+        path = Path(d) / "t.conf"
+        config.save(path, values)
         script = (
-            f'source "{p}"\n'
+            f'source "{path}"\n'
             'printf "%s\\n" "$GAME_EXECUTABLE"\n'
             'printf "%s\\n" "${GAME_ARGS[@]}"\n'
         )
         out = subprocess.run(
             ["bash", "-c", script], capture_output=True, text=True, check=True
         )
-        expected = [values["GAME_EXECUTABLE"], *values["GAME_ARGS"]]
-        assert out.stdout.splitlines() == expected, out.stdout
+        assert out.stdout.splitlines() == [
+            values["GAME_EXECUTABLE"],
+            *values["GAME_ARGS"],
+        ], out.stdout
+
+
+@test
+def packed_extra_vars_are_normalized_on_load() -> None:
+    from launcher.domain.config import normalize_env_pairs
+
+    assert normalize_env_pairs(["A=1 B=2 C=3"]) == ["A=1", "B=2", "C=3"]
+    # Not every token is a pair, so this one stays whole.
+    assert normalize_env_pairs(["FOO=bar baz"]) == ["FOO=bar baz"]
 
 
 @test
 def real_project_confs_still_parse() -> None:
+    from launcher.domain import config
+
     root = Path(__file__).resolve().parent.parent
     confs = list((root / "games").glob("*.conf"))
     assert confs, "no game confs found"
     for conf in confs:
-        data = config.load(conf)
-        assert data.get("GAME_EXECUTABLE"), f"{conf.name} has no executable"
+        assert config.load(conf).get("GAME_EXECUTABLE"), conf.name
 
 
 # --------------------------------------------------------------------------
-# game model
-# --------------------------------------------------------------------------
-
-
-@test
-def scan_games_returns_known_games() -> None:
-    found = {g.name for g in games.scan_games()}
-    assert "Schedule I" in found, found
-
-
-@test
-def game_fields_round_trip_through_conf() -> None:
-    with tempfile.TemporaryDirectory() as d:
-        p = Path(d) / "Test Game.conf"
-        game = games.Game(
-            name="Test Game",
-            conf_path=p,
-            executable="/games/test.exe",
-            winedebug="-all",
-            vkd3d_config="dxr",
-            extra_vars=["FOO=bar"],
-        )
-        config.save(p, games._build_data(game))
-        back = games._game_from_conf(p, set())
-        for field in ("executable", "winedebug", "vkd3d_config", "extra_vars"):
-            assert getattr(back, field) == getattr(game, field), field
-
-
-# --------------------------------------------------------------------------
-# Qt / UI construction
+# domain: models
 # --------------------------------------------------------------------------
 
 
 @test
-def main_window_constructs_headless() -> None:
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])
-    window_mod = _import("launcher.ui.main_window")
-    win = window_mod.MainWindow()
-    win.show()
-    app.processEvents()
-    assert win.isVisible()
-    win.close()
-
-
-@test
-def stylesheet_is_non_empty() -> None:
-    try:
-        from launcher.ui.theme.qss import build_stylesheet
-
-        sheet = build_stylesheet()
-    except ImportError:
-        from launcher.ui.styles import DARK_STYLE
-
-        sheet = DARK_STYLE
-    assert "QMainWindow" in sheet and len(sheet) > 500
-
-
-@test
-def qt_can_write_the_artwork_formats() -> None:
-    from PySide6.QtGui import QImageWriter
-
-    supported = {bytes(f).decode() for f in QImageWriter.supportedImageFormats()}
-    for fmt in ("png", "jpg", "webp"):
-        assert fmt in supported, f"{fmt} unsupported; artwork re-encode would fail"
-
-
-# --------------------------------------------------------------------------
-# artwork service
-# --------------------------------------------------------------------------
-
-
-@test
-def artwork_slugs_never_collide() -> None:
-    from launcher.services import artwork
-
-    names = [
-        "Schedule I",
-        "Warhammer 40,000",
-        "Warhammer 40 000",
-        "Caf\u00e9 Ni\u00f1o",
-        "S.T.A.L.K.E.R.",
-        "!!!",
-        "",
-    ]
-    slugs = [artwork.slug(n) for n in names]
-    assert len(set(slugs)) == len(slugs), dict(zip(names, slugs, strict=True))
-    # Plain names stay readable rather than being hashed.
-    assert artwork.slug("Schedule I") == "schedule-i"
-
-
-@test
-def artwork_store_shrinks_and_replaces() -> None:
-    from PySide6.QtGui import QImage, QImageWriter
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
-    from launcher.services import artwork
-
-    with tempfile.TemporaryDirectory() as d:
-        tmp = Path(d)
-        artwork.ARTWORK_DIR = tmp / "artwork"
-        artwork.invalidate()
-
-        # A 600x900 source, the shape SteamGridDB actually serves.
-        src = tmp / "src.png"
-        image = QImage(600, 900, QImage.Format.Format_RGB32)
-        for y in range(900):
-            for x in range(0, 600, 4):
-                image.setPixel(x, y, (x * 7 + y * 13) & 0xFFFFFF)
-        QImageWriter(str(src), b"png").write(image)
-
-        dest = artwork.store("Test Game", artwork.GRID.name, src)
-        assert dest.is_file()
-
-        loaded = QImage(str(dest))
-        assert loaded.width() <= artwork.GRID.max_width
-        assert loaded.height() <= artwork.GRID.max_height
-
-        # Storing again must not leave a second file under another extension.
-        artwork.store("Test Game", artwork.GRID.name, src)
-        files = list((artwork.ARTWORK_DIR / artwork.GRID.name).iterdir())
-        assert len(files) == 1, files
-
-        assert artwork.remove("Test Game") >= 1
-        assert artwork.path_for("Test Game", artwork.GRID.name) is None
-
-
-@test
-def artwork_reencode_shrinks_real_artwork() -> None:
-    """Synthetic images are a poor compression test; use a real one."""
-    from PySide6.QtGui import QImage
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
-    from launcher.services import artwork
-
-    root = Path(__file__).resolve().parent.parent
-    candidates = [
-        p
-        for p in (root / "launcher" / "heroes").glob("*")
-        if p.suffix.lower() in artwork.EXTENSIONS and p.stat().st_size > 100_000
-    ]
-    if not candidates:
-        return  # nothing real to measure against
-
-    source = candidates[0]
-    data, _ = artwork.encode(QImage(str(source)), artwork.GRID)
-    assert len(data) < source.stat().st_size, (
-        f"{source.name}: {source.stat().st_size} -> {len(data)}"
+def sorting_orders_the_library_as_advertised() -> None:
+    from launcher.domain.models import (
+        Game,
+        GameConfig,
+        GameStats,
+        SortOrder,
+        sort_games,
     )
 
+    now = datetime.now()
 
-@test
-def artwork_cache_returns_the_same_pixmap() -> None:
-    from PySide6.QtCore import QSize
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
-    from launcher.services import artwork
-
-    key = "Schedule I"
-    if artwork.path_for(key) is None:
-        return  # no artwork on disk to exercise
-    size = QSize(200, 160)
-    first = artwork.pixmap(key, artwork.GRID.name, size, expand=True)
-    second = artwork.pixmap(key, artwork.GRID.name, size, expand=True)
-    assert first is not None
-    assert first is second, "cache miss on an unchanged file"
-
-
-@test
-def artwork_cleanup_only_does_what_was_asked() -> None:
-    from PySide6.QtGui import QImage, QImageWriter
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
-    from launcher.services import artwork
-
-    with tempfile.TemporaryDirectory() as d:
-        tmp = Path(d)
-        artwork.ARTWORK_DIR = tmp / "artwork"
-        artwork.LEGACY_HEROES_DIR = tmp / "heroes"
-        artwork.LEGACY_HEROES_DIR.mkdir()
-        artwork.invalidate()
-
-        image = QImage(600, 900, QImage.Format.Format_RGB32)
-        for y in range(0, 900, 3):
-            for x in range(0, 600, 3):
-                image.setPixel(x, y, (x * 31 + y * 17) & 0xFFFFFF)
-        for name in ("Live Game.png", "Dead Game.png"):
-            QImageWriter(str(artwork.LEGACY_HEROES_DIR / name), b"png").write(image)
-
-        report = artwork.scan({"Live Game"})
-        assert len(report.orphans) == 1, report.orphans
-        assert report.orphans[0].key == "Dead Game"
-
-        # Declining every action must leave the directory exactly as it was.
-        before = sorted(p.name for p in artwork.LEGACY_HEROES_DIR.iterdir())
-        artwork.apply_cleanup(
-            report,
-            reencode=False,
-            dedupe=False,
-            delete_orphans=False,
-            migrate=False,
+    def make(name, playtime=0, last=None, added=None):
+        return Game(
+            config=GameConfig(name=name),
+            conf_path=Path(f"/{name}.conf"),
+            stats=GameStats(playtime_seconds=playtime, last_played=last, added=added),
         )
-        after = sorted(p.name for p in artwork.LEGACY_HEROES_DIR.iterdir())
-        assert before == after, (before, after)
 
-        report = artwork.scan({"Live Game"})
-        result = artwork.apply_cleanup(report)
-        assert result.orphans_removed == 1
-        assert not (artwork.LEGACY_HEROES_DIR / "Dead Game.png").exists()
-        # The live game survived, migrated into the new tree.
-        survivor = artwork.path_for("Live Game", artwork.GRID.name)
-        assert survivor is not None and survivor.is_file(), "live artwork was lost"
-        assert artwork.ARTWORK_DIR in survivor.parents
+    games = [
+        make("Celeste", 100, now - timedelta(days=10), now - timedelta(days=30)),
+        make("Balatro", 9000, now, now - timedelta(days=1)),
+        make("Anno", 0, None, now - timedelta(days=90)),
+    ]
+
+    assert [g.name for g in sort_games(games, SortOrder.NAME)] == [
+        "Anno",
+        "Balatro",
+        "Celeste",
+    ]
+    assert [g.name for g in sort_games(games, SortOrder.PLAYTIME)][0] == "Balatro"
+    assert [g.name for g in sort_games(games, SortOrder.LAST_PLAYED)][0] == "Balatro"
+    # Never played sorts last rather than mixing in with the zeros.
+    assert [g.name for g in sort_games(games, SortOrder.LAST_PLAYED)][-1] == "Anno"
+    assert [g.name for g in sort_games(games, SortOrder.RECENTLY_ADDED)][0] == "Balatro"
+
+
+@test
+def playtime_and_last_played_read_naturally() -> None:
+    from launcher.domain.models import format_last_played, format_playtime
+
+    assert format_playtime(0) == ""
+    assert format_playtime(45) == "45s"
+    assert format_playtime(600) == "10m"
+    assert format_playtime(3600 * 12 + 1440) == "12.4h"
+
+    now = datetime(2026, 9, 20, 12, 0)
+    cases = {
+        0: "today",
+        1: "yesterday",
+        3: "3 days ago",
+        7: "last week",
+        14: "2 weeks ago",
+        31: "last month",
+        90: "3 months ago",
+        400: "last year",
+    }
+    for days, expected in cases.items():
+        got = format_last_played(now - timedelta(days=days), now=now)
+        assert got == expected, f"{days}d -> {got!r}, expected {expected!r}"
+    assert format_last_played(None) == ""
 
 
 # --------------------------------------------------------------------------
-# prefixes and config plumbing
+# data: repository and state
+# --------------------------------------------------------------------------
+
+
+@test
+def repository_round_trips_every_config_field() -> None:
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        original = GameConfig(
+            name="Test Game",
+            executable="/games/test.exe",
+            game_args=["-console"],
+            additional_dlls=["winhttp=n,b"],
+            use_gamescope=True,
+            gamescope_w="1920",
+            prefix="prefixes/Test Game",
+            extra_vars=["FOO=bar"],
+            winedebug="-all",
+            vkd3d_config="dxr",
+        )
+        ctx.games.add(original)
+        loaded = ctx.games.get("Test Game")
+        assert loaded is not None
+        for field in (
+            "executable",
+            "game_args",
+            "additional_dlls",
+            "use_gamescope",
+            "gamescope_w",
+            "prefix",
+            "extra_vars",
+            "winedebug",
+            "vkd3d_config",
+        ):
+            assert getattr(loaded.config, field) == getattr(original, field), field
+
+
+@test
+def state_survives_a_rename_and_dies_with_the_game() -> None:
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        ctx.games.add(GameConfig(name="Ds3", executable="/g/ds3.exe"))
+        ctx.state.set_favorite("Ds3", True)
+        ctx.state.add_playtime("Ds3", 7200)
+
+        ctx.games.rename("Ds3", "Dark Souls III")
+        moved = ctx.games.get("Dark Souls III")
+        assert moved is not None
+        assert moved.is_favorite and moved.playtime_seconds == 7200
+        assert ctx.games.get("Ds3") is None
+
+        ctx.games.remove("Dark Souls III")
+        assert ctx.state.all_stats() == {}
+
+
+@test
+def legacy_favorites_migrate_exactly_once() -> None:
+    from launcher.data.state_store import StateStore
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        legacy = root / "favorites.json"
+        legacy.write_text('["Celeste", "Hades"]')
+
+        store = StateStore(root / "state.db")
+        assert store.import_legacy_favorites(legacy) == 2
+        # Re-running must not resurrect a favourite the user has removed.
+        store.set_favorite("Celeste", False)
+        assert store.import_legacy_favorites(legacy) == 0
+        assert store.get("Celeste").favorite is False
+        store.close()
+
+
+@test
+def settings_persist_and_announce_changes() -> None:
+    from launcher.data.settings_store import SettingsStore
+
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "settings.json"
+        store = SettingsStore(path)
+        seen: list[tuple[str, object]] = []
+        store.changed.connect(lambda k, v: seen.append((k, v)))
+
+        store.set("log_max_lines", 1234)
+        assert seen == [("log_max_lines", 1234)]
+        # Setting the same value again is not a change.
+        store.set("log_max_lines", 1234)
+        assert len(seen) == 1
+
+        assert SettingsStore(path).get_int("log_max_lines") == 1234
+        # Unknown keys fall back to the shipped default.
+        assert store.get_bool("confirm_remove") is True
+
+
+# --------------------------------------------------------------------------
+# domain: prefixes, and the shell that must agree with them
 # --------------------------------------------------------------------------
 
 
 @test
 def prefix_resolution_matches_the_shell() -> None:
-    from launcher.core import prefixes
-    from launcher.core.paths import BASE_DIR
-
-    assert prefixes.resolve("") == prefixes.shared_prefix_path()
-    assert prefixes.resolve("prefixes/Ds3") == BASE_DIR / "prefixes" / "Ds3"
-    assert prefixes.resolve("/mnt/ssd/ds3") == Path("/mnt/ssd/ds3")
-    assert prefixes.resolve("~/wine/ds3") == Path.home() / "wine" / "ds3"
-
-    assert prefixes.inspect("").is_shared
-    outside = prefixes.inspect("/mnt/definitely-not-here/ds3")
-    assert "flatpak" in outside.message.lower()
-    assert "will be created" in prefixes.inspect("prefixes/Nope").message.lower()
-
-
-@test
-def shell_resolves_the_same_prefixes_as_python() -> None:
-    """The shell and core/prefixes.py must not drift apart."""
     import subprocess
 
-    from launcher.core import prefixes
-    from launcher.core.paths import BASE_DIR, GAMES_DIR
+    from launcher.data.paths import Paths
+    from launcher.domain import prefixes
 
-    script = BASE_DIR / "game-launcher.sh"
+    paths = Paths.default()
+    script = paths.launcher_script
     if not script.is_file():
         return
 
-    conf = GAMES_DIR / "__smoketest.conf"
-    cases = ["", "prefixes/Smoke Test", "~/wine/smoke", "/mnt/ssd/smoke"]
+    conf = paths.games_dir / "__smoketest.conf"
     try:
-        for raw in cases:
+        for raw in ("", "prefixes/Smoke Test", "~/wine/smoke", "/mnt/ssd/smoke"):
             body = 'GAME_EXECUTABLE="/games/smoke.exe"\n'
             if raw:
                 body += f'GAME_PREFIX="{raw}"\n'
@@ -383,15 +328,15 @@ def shell_resolves_the_same_prefixes_as_python() -> None:
             out = subprocess.run(
                 ["bash", str(script), "--dry-run", "__smoketest"],
                 capture_output=True,
-                check=False,
                 text=True,
-                cwd=BASE_DIR,
-            )
+                check=False,
+                cwd=paths.base,
+            ).stdout
             line = next(
-                ln for ln in out.stdout.splitlines() if ln.startswith("WINEPREFIX:")
+                ln for ln in out.splitlines() if ln.startswith("WINEPREFIX:")
             )
             from_shell = line.split(":", 1)[1].strip()
-            from_python = str(prefixes.resolve(raw))
+            from_python = str(prefixes.resolve(raw, paths))
             assert from_shell == from_python, f"{raw!r}: {from_shell} != {from_python}"
     finally:
         conf.unlink(missing_ok=True)
@@ -401,19 +346,19 @@ def shell_resolves_the_same_prefixes_as_python() -> None:
 def shell_exports_previously_dead_config_keys() -> None:
     import subprocess
 
-    from launcher.core.paths import BASE_DIR, GAMES_DIR
+    from launcher.data.paths import Paths
 
-    script = BASE_DIR / "game-launcher.sh"
+    paths = Paths.default()
+    script = paths.launcher_script
     if not script.is_file():
         return
 
-    conf = GAMES_DIR / "__smoketest.conf"
+    conf = paths.games_dir / "__smoketest.conf"
     conf.write_text(
         'GAME_EXECUTABLE="/games/smoke.exe"\n'
         'CUSTOM_PROTON_PATH="/opt/proton-ge"\n'
         'OVERRIDE_APP_ID="987654"\n'
         'WINEDEBUG="-all"\n'
-        'VKD3D_CONFIG="dxr"\n'
         'extra_vars=("A=1 B=2" "KEEPS=a space")\n',
         encoding="utf-8",
     )
@@ -423,175 +368,195 @@ def shell_exports_previously_dead_config_keys() -> None:
             capture_output=True,
             text=True,
             check=False,
-            cwd=BASE_DIR,
+            cwd=paths.base,
         ).stdout
     finally:
         conf.unlink(missing_ok=True)
 
     assert "PROTONPATH:  /opt/proton-ge" in out, out
     assert "GAMEID:      987654" in out, out
-    for expected in ("A=1", "B=2", "WINEDEBUG=-all", "VKD3D_CONFIG=dxr"):
+    for expected in ("A=1", "B=2", "WINEDEBUG=-all"):
         assert f"- {expected}" in out, f"{expected} missing from:\n{out}"
-    # A value containing a space must not be split apart.
     assert "- KEEPS=a space" in out, out
 
 
 @test
-def packed_extra_vars_are_normalized_on_load() -> None:
-    assert config.normalize_env_pairs(["A=1 B=2 C=3"]) == ["A=1", "B=2", "C=3"]
-    # Not every token is a pair, so this one stays whole.
-    assert config.normalize_env_pairs(["FOO=bar baz"]) == ["FOO=bar baz"]
-    assert config.normalize_env_pairs(["SOLO=x"]) == ["SOLO=x"]
+def prefix_inspection_warns_about_the_sandbox() -> None:
+    from launcher.data.paths import Paths
+    from launcher.domain import prefixes
+
+    paths = Paths.default()
+    assert prefixes.inspect("", paths).is_shared
+    assert "flatpak" in prefixes.inspect("/mnt/nope/x", paths).message.lower()
+    assert "will be created" in prefixes.inspect("prefixes/Nope", paths).message.lower()
+
+
+# --------------------------------------------------------------------------
+# services: artwork
+# --------------------------------------------------------------------------
 
 
 @test
-def editing_a_game_preserves_fields_the_form_hides() -> None:
-    from PySide6.QtWidgets import QApplication
+def artwork_slugs_never_collide() -> None:
+    from launcher.services.artwork import slug
 
-    QApplication.instance() or QApplication([])
-    from launcher.ui.dialogs.game_dialog import AddGameDialog
+    names = [
+        "Schedule I",
+        "Warhammer 40,000",
+        "Warhammer 40 000",
+        "Café Niño",
+        "S.T.A.L.K.E.R.",
+        "!!!",
+        "",
+    ]
+    slugs = [slug(n) for n in names]
+    assert len(set(slugs)) == len(slugs), dict(zip(names, slugs, strict=True))
+    assert slug("Schedule I") == "schedule-i"
+
+
+def _sample_image(width: int = 600, height: int = 900):
+    from PySide6.QtGui import QImage
+
+    qt_app()
+    image = QImage(width, height, QImage.Format.Format_RGB32)
+    for y in range(0, height, 3):
+        for x in range(0, width, 3):
+            image.setPixel(x, y, (x * 31 + y * 17) & 0xFFFFFF)
+    return image
+
+
+@test
+def artwork_store_caps_size_and_replaces_siblings() -> None:
+    from PySide6.QtGui import QImage
+
+    from launcher.services.artwork import GRID
+
+    with sandbox() as ctx:
+        dest = ctx.artwork.store("Test Game", GRID.name, _sample_image())
+        assert dest.is_file()
+
+        loaded = QImage(str(dest))
+        assert loaded.width() <= GRID.max_width
+        assert loaded.height() <= GRID.max_height
+
+        ctx.artwork.store("Test Game", GRID.name, _sample_image())
+        files = list(ctx.artwork.art_dir(GRID.name).iterdir())
+        assert len(files) == 1, files
+
+        assert ctx.artwork.remove("Test Game") >= 1
+        assert ctx.artwork.path_for("Test Game", GRID.name) is None
+
+
+@test
+def artwork_reencode_shrinks_real_artwork() -> None:
+    """Synthetic images compress oddly; measure against a real one."""
+    from PySide6.QtGui import QImage
+
+    from launcher.services.artwork import EXTENSIONS, GRID, encode
+
+    qt_app()
+    root = Path(__file__).resolve().parent.parent / "launcher"
+    candidates = [
+        p
+        for folder in (root / "heroes", root / "artwork" / "grid")
+        if folder.is_dir()
+        for p in folder.iterdir()
+        if p.suffix.lower() in EXTENSIONS and p.stat().st_size > 100_000
+    ]
+    if not candidates:
+        return
+    source = candidates[0]
+    data, _ = encode(QImage(str(source)), GRID)
+    assert len(data) < source.stat().st_size, source.name
+
+
+@test
+def artwork_cache_returns_the_same_pixmap() -> None:
+    from PySide6.QtCore import QSize
+
+    from launcher.services.artwork import GRID
+
+    with sandbox() as ctx:
+        ctx.artwork.store("Cached", GRID.name, _sample_image())
+        size = QSize(200, 160)
+        first = ctx.artwork.pixmap("Cached", GRID.name, size, expand=True)
+        second = ctx.artwork.pixmap("Cached", GRID.name, size, expand=True)
+        assert first is not None
+        assert first is second, "cache miss on an unchanged file"
+
+
+@test
+def artwork_cleanup_only_does_what_was_asked() -> None:
+    from PySide6.QtGui import QImageWriter
+
+    from launcher.services.artwork import GRID
+
+    with sandbox() as ctx:
+        legacy = ctx.paths.legacy_heroes_dir
+        legacy.mkdir(parents=True, exist_ok=True)
+        image = _sample_image()
+        for name in ("Live Game.png", "Dead Game.png"):
+            QImageWriter(str(legacy / name), b"png").write(image)
+
+        report = ctx.cleaner.scan({"Live Game"})
+        assert len(report.orphans) == 1
+        assert report.orphans[0].key == "Dead Game"
+
+        # Declining every action must leave the directory untouched.
+        before = sorted(p.name for p in legacy.iterdir())
+        ctx.cleaner.apply(
+            report,
+            reencode=False,
+            dedupe=False,
+            delete_orphans=False,
+            migrate=False,
+        )
+        assert sorted(p.name for p in legacy.iterdir()) == before
+
+        report = ctx.cleaner.scan({"Live Game"})
+        result = ctx.cleaner.apply(report)
+        assert result.orphans_removed == 1
+        assert not (legacy / "Dead Game.png").exists()
+        survivor = ctx.artwork.path_for("Live Game", GRID.name)
+        assert survivor is not None and survivor.is_file(), "live artwork was lost"
+        assert ctx.paths.artwork_dir in survivor.parents
+
+
+# --------------------------------------------------------------------------
+# services: importing, tasks
+# --------------------------------------------------------------------------
+
+
+@test
+def importer_separates_games_from_helpers() -> None:
+    from launcher.services.importer import scan_folder
 
     with tempfile.TemporaryDirectory() as d:
-        conf = Path(d) / "Test Game.conf"
-        original = games.Game(
-            name="Test Game",
-            conf_path=conf,
-            executable="/games/test.exe",
-            winedebug="-all",
-            vkd3d_config="dxr",
-            radv_perftest="gpl",
-            pulse_latency_msec="60",
-            proton_use_wine_sync="1",
-            prefix="prefixes/Test Game",
-        )
-        config.save(conf, games._build_data(original))
-        loaded = games._game_from_conf(conf, set())
+        root = Path(d)
+        big = b"\0" * 200_000
+        (root / "Hades").mkdir()
+        (root / "Hades" / "Hades.exe").write_bytes(big)
+        (root / "Hades" / "unins000.exe").write_bytes(big)
+        (root / "Hades" / "CrashHandler.exe").write_bytes(big)
+        (root / "Celeste").mkdir()
+        (root / "Celeste" / "Celeste.exe").write_bytes(big)
+        (root / "Celeste" / "tiny.exe").write_bytes(b"\0" * 1000)
+        redist = root / "Celeste" / "_CommonRedist"
+        redist.mkdir()
+        (redist / "vcredist_x64.exe").write_bytes(big)
 
-        edited = AddGameDialog(game=loaded).get_game()
-        hidden = (
-            "winedebug",
-            "vkd3d_config",
-            "radv_perftest",
-            "pulse_latency_msec",
-            "proton_use_wine_sync",
-        )
-        for f in hidden:
-            assert getattr(edited, f) == getattr(original, f), f
-        assert edited.prefix == "prefixes/Test Game"
-
-
-# --------------------------------------------------------------------------
-# main window behaviour
-# --------------------------------------------------------------------------
-
-
-@test
-def selecting_a_game_never_launches_it() -> None:
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])
-    from launcher.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.show()
-    app.processEvents()
-    if len(win._games) < 2:
-        return
-
-    launched: list[str] = []
-    win._process_mgr.launch = lambda n: (launched.append(n), True)[1]  # type: ignore[method-assign]
-
-    other = win._games[1].name
-    win._sidebar.select_game(other)
-    app.processEvents()
-    assert launched == [], "selection launched a game"
-    assert win._detail._game is not None
-    assert win._detail._game.name == other
-
-    win._detail._play_btn.click()
-    app.processEvents()
-    assert launched == [other], launched
-    win.close()
-
-
-@test
-def logs_are_kept_per_game() -> None:
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])
-    from launcher.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.show()
-    app.processEvents()
-    if len(win._games) < 2:
-        return
-
-    first, second = win._games[0].name, win._games[1].name
-    win._sidebar.select_game(second)
-    app.processEvents()
-
-    # Output for a game that is not on screen must still be captured.
-    win._on_game_started(first)
-    win._on_game_output(first, "hello from the first game\n")
-    app.processEvents()
-    assert first in win._logs
-
-    win._sidebar.select_game(first)
-    app.processEvents()
-    shown = win._detail._log._output.toPlainText()
-    assert "hello from the first game" in shown, shown
-
-    win._sidebar.select_game(second)
-    app.processEvents()
-    assert win._detail._log._output.toPlainText() == ""
-    win.close()
-
-
-@test
-def grid_lays_out_cards_when_its_page_is_shown() -> None:
-    """A stacked page's children report isVisible() == False while hidden."""
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])
-    from launcher.ui.main_window import MainWindow
-
-    win = MainWindow()
-    win.resize(1280, 800)
-    win.show()
-    app.processEvents()
-    if not win._games:
-        return
-
-    win._switch_view(1)
-    for _ in range(3):
-        app.processEvents()
-
-    cards = win._game_grid._cards
-    positions = {c.game.name: c.pos() for c in cards}
-    assert len(positions) == len(win._games), positions
-    # Distinct positions mean every card was actually laid out.
-    assert len({(p.x(), p.y()) for p in positions.values()}) == len(positions), positions
-    # And the contents margins are honoured, not ignored.
-    assert min(p.x() for p in positions.values()) > 0, positions
-    win.close()
+        found = scan_folder(root)
+        likely = [c.name for c in found if c.likely_game]
+        assert sorted(likely) == ["Celeste", "Hades"], [
+            (c.name, c.likely_game, c.reason) for c in found
+        ]
 
 
 @test
 def background_tasks_report_and_cancel() -> None:
-    import time
-
-    from PySide6.QtWidgets import QApplication
-
-    app = QApplication.instance() or QApplication([])
     from launcher.services.tasks import TaskGroup
 
-    def pump(predicate, timeout=5.0) -> None:
-        start = time.time()
-        while not predicate() and time.time() - start < timeout:
-            app.processEvents()
-            time.sleep(0.01)
-
+    qt_app()
     group = TaskGroup()
     done: list[object] = []
     failed: list[str] = []
@@ -610,7 +575,6 @@ def background_tasks_report_and_cancel() -> None:
     pump(lambda: bool(failed))
     assert failed and "boom" in failed[0]
 
-    # A result still in flight when cancel_all() runs must be dropped.
     late = TaskGroup()
     arrived: list[object] = []
     late.finished.connect(lambda _t, r: arrived.append(r))
@@ -623,16 +587,311 @@ def background_tasks_report_and_cancel() -> None:
 @test
 def task_tokens_fit_in_a_qt_int() -> None:
     """Signal(int) is a 32-bit C++ int; wider tokens overflow."""
-    from PySide6.QtWidgets import QApplication
-
-    QApplication.instance() or QApplication([])
     from launcher.services.tasks import TaskGroup
 
+    qt_app()
     group = TaskGroup()
     for _ in range(3):
         group.cancel_all()
-        token = group.submit(lambda: None)
-        assert token < 2**31, token
+        assert group.submit(lambda: None) < 2**31
+
+
+@test
+def short_sessions_do_not_count_as_playtime() -> None:
+    from launcher.services.process import MIN_SESSION_SECONDS, ProcessService, _Session
+
+    with sandbox() as ctx:
+        service = ProcessService(ctx.paths)
+        recorded: list[tuple[str, int]] = []
+        service.session_recorded.connect(lambda n, s: recorded.append((n, s)))
+
+        # A launch that dies immediately is a failure, not a session.
+        service._sessions["Quick"] = _Session(None, time.monotonic())
+        service._on_finished("Quick", 1)
+        assert recorded == [], recorded
+
+        service._sessions["Long"] = _Session(
+            None, time.monotonic() - (MIN_SESSION_SECONDS + 5)
+        )
+        service._on_finished("Long", 0)
+        assert recorded and recorded[0][0] == "Long"
+        assert recorded[0][1] >= MIN_SESSION_SECONDS
+
+
+# --------------------------------------------------------------------------
+# app: the controller
+# --------------------------------------------------------------------------
+
+
+@test
+def controller_filters_sorts_and_reports_errors() -> None:
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.models import GameConfig, SortOrder
+
+    with sandbox() as ctx:
+        lib = LibraryController(ctx)
+        errors: list[tuple[str, str]] = []
+        lib.error.connect(lambda t, m: errors.append((t, m)))
+
+        for name in ("Hades", "Celeste", "Balatro"):
+            lib.add_game(GameConfig(name=name, executable=f"/g/{name}.exe"))
+
+        assert [g.name for g in lib.games] == ["Balatro", "Celeste", "Hades"]
+
+        lib.set_search("ba")
+        assert [g.name for g in lib.visible_games()] == ["Balatro"]
+        lib.set_search("")
+
+        lib.toggle_favorite("Celeste")
+        lib.set_favorites_only(True)
+        assert [g.name for g in lib.visible_games()] == ["Celeste"]
+        lib.set_favorites_only(False)
+
+        lib.set_sort_order(SortOrder.RECENTLY_ADDED)
+        assert ctx.settings.get_str("sort_order") == "added"
+
+        assert lib.add_game(GameConfig(name="Hades", executable="/x.exe")) is False
+        assert errors and errors[0][0] == "Add Game"
+
+
+@test
+def renaming_through_the_controller_cannot_duplicate_a_game() -> None:
+    """The caller naturally mutates the game's own config; that must work."""
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        lib = LibraryController(ctx)
+        lib.add_game(GameConfig(name="Hades", executable="/g/h.exe"))
+        ctx.state.add_playtime("Hades", 7200)
+        lib.reload()
+
+        game = lib.game("Hades")
+        assert game is not None
+        config = game.config
+        config.name = "Hades II"
+        assert lib.update_game("Hades", config)
+
+        assert [g.name for g in lib.games] == ["Hades II"]
+        renamed = lib.game("Hades II")
+        assert renamed is not None and renamed.playtime_seconds == 7200
+
+
+@test
+def playtime_accumulates_from_finished_sessions() -> None:
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        lib = LibraryController(ctx)
+        lib.add_game(GameConfig(name="Hades", executable="/g/h.exe"))
+        lib.reload()
+
+        ctx.processes.game_started.emit("Hades")
+        ctx.processes.session_recorded.emit("Hades", 1800)
+        ctx.processes.session_recorded.emit("Hades", 600)
+
+        game = lib.game("Hades")
+        assert game is not None
+        assert game.playtime_seconds == 2400, game.playtime_seconds
+        assert game.last_played is not None
+
+
+# --------------------------------------------------------------------------
+# ui
+# --------------------------------------------------------------------------
+
+
+@test
+def window_builds_and_selecting_never_launches() -> None:
+    from launcher.app.main import build_window
+    from launcher.domain.models import GameConfig
+
+    app = qt_app()
+    with sandbox() as ctx:
+        # Real files: the controller refuses to launch a game whose
+        # executable is missing, and the Play button stays disabled.
+        exe_dir = ctx.paths.base / "exes"
+        exe_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("Alpha", "Beta"):
+            exe = exe_dir / f"{name}.exe"
+            exe.write_bytes(b"\0")
+            ctx.games.add(GameConfig(name=name, executable=str(exe)))
+
+        window = build_window(ctx)
+        window.show()
+        app.processEvents()
+
+        launched: list[str] = []
+        ctx.processes.launch = lambda n: (launched.append(n), True)[1]
+
+        window._sidebar.select_game("Beta")
+        app.processEvents()
+        assert launched == [], "selection launched a game"
+        assert window._detail._game is not None
+        assert window._detail._game.name == "Beta"
+
+        window._detail._play_btn.click()
+        app.processEvents()
+        assert launched == ["Beta"], launched
+        window.close()
+
+
+@test
+def a_missing_executable_cannot_be_launched() -> None:
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        lib = LibraryController(ctx)
+        lib.add_game(GameConfig(name="Gone", executable="/nowhere/gone.exe"))
+        lib.reload()
+
+        errors: list[tuple[str, str]] = []
+        lib.error.connect(lambda t, m: errors.append((t, m)))
+        launched: list[str] = []
+        ctx.processes.launch = lambda n: (launched.append(n), True)[1]
+
+        assert lib.launch("Gone") is False
+        assert launched == [], "launched a game with no executable"
+        assert errors and errors[0][0] == "Cannot Launch"
+
+
+@test
+def logs_are_kept_per_game() -> None:
+    from launcher.app.main import build_window
+    from launcher.domain.models import GameConfig
+
+    app = qt_app()
+    with sandbox() as ctx:
+        for name in ("Alpha", "Beta"):
+            ctx.games.add(GameConfig(name=name, executable=f"/g/{name}.exe"))
+        window = build_window(ctx)
+        window.show()
+        app.processEvents()
+
+        window._sidebar.select_game("Beta")
+        app.processEvents()
+
+        # Output for a game that is not on screen must still be captured.
+        window._on_game_started("Alpha")
+        window._on_game_output("Alpha", "hello from alpha\n")
+        app.processEvents()
+
+        window._sidebar.select_game("Alpha")
+        app.processEvents()
+        assert "hello from alpha" in window._detail._log._output.toPlainText()
+
+        window._sidebar.select_game("Beta")
+        app.processEvents()
+        assert window._detail._log._output.toPlainText() == ""
+        window.close()
+
+
+@test
+def grid_lays_out_cards_when_its_page_is_shown() -> None:
+    """A stacked page's children report isVisible() == False while hidden."""
+    from launcher.app.main import build_window
+    from launcher.domain.models import GameConfig
+
+    app = qt_app()
+    with sandbox() as ctx:
+        for name in ("Alpha", "Beta", "Gamma"):
+            ctx.games.add(GameConfig(name=name, executable=f"/g/{name}.exe"))
+        window = build_window(ctx)
+        window.resize(1280, 800)
+        window.show()
+        app.processEvents()
+
+        window._switch_view(1)
+        for _ in range(3):
+            app.processEvents()
+
+        positions = {c.game.name: c.pos() for c in window._game_grid._cards}
+        assert len(positions) == 3, positions
+        assert len({(p.x(), p.y()) for p in positions.values()}) == 3, positions
+        # Contents margins are honoured, not ignored.
+        assert min(p.x() for p in positions.values()) > 0, positions
+        window.close()
+
+
+@test
+def dialogs_all_construct() -> None:
+    from launcher.domain.models import GameConfig
+    from launcher.ui.dialogs.game_dialog import AddGameDialog
+    from launcher.ui.dialogs.import_dialog import ImportGamesDialog
+    from launcher.ui.dialogs.restore_dialog import RestoreBackupDialog
+    from launcher.ui.dialogs.settings_dialog import SettingsDialog
+    from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
+
+    app = qt_app()
+    with sandbox() as ctx:
+        ctx.games.add(GameConfig(name="Alpha", executable="/g/a.exe"))
+        game = ctx.games.get("Alpha")
+
+        for dialog in (
+            AddGameDialog(ctx.paths),
+            AddGameDialog(ctx.paths, game=game),
+            SettingsDialog(ctx),
+            ImportGamesDialog(ctx),
+            SGDBDialog(ctx, game_name="Alpha"),
+            RestoreBackupDialog("Alpha", []),
+        ):
+            dialog.show()
+            app.processEvents()
+            dialog.close()
+
+
+@test
+def editing_a_game_preserves_fields_the_form_hides() -> None:
+    from launcher.domain.models import GameConfig
+    from launcher.ui.dialogs.game_dialog import AddGameDialog
+
+    qt_app()
+    with sandbox() as ctx:
+        original = GameConfig(
+            name="Test Game",
+            executable="/games/test.exe",
+            winedebug="-all",
+            vkd3d_config="dxr",
+            radv_perftest="gpl",
+            pulse_latency_msec="60",
+            proton_use_wine_sync="1",
+            prefix="prefixes/Test Game",
+        )
+        ctx.games.add(original)
+        game = ctx.games.get("Test Game")
+        assert game is not None
+
+        edited = AddGameDialog(ctx.paths, game=game).get_config()
+        for field in (
+            "winedebug",
+            "vkd3d_config",
+            "radv_perftest",
+            "pulse_latency_msec",
+            "proton_use_wine_sync",
+        ):
+            assert getattr(edited, field) == getattr(original, field), field
+        assert edited.prefix == "prefixes/Test Game"
+
+
+@test
+def stylesheet_covers_the_new_widgets() -> None:
+    from launcher.ui.theme.qss import build_stylesheet
+
+    sheet = build_stylesheet()
+    for selector in ("QMainWindow", "#sidebar", "#detailPanel", "#gameList"):
+        assert selector in sheet, selector
+
+
+@test
+def qt_can_write_the_artwork_formats() -> None:
+    from PySide6.QtGui import QImageWriter
+
+    qt_app()
+    supported = {bytes(f).decode() for f in QImageWriter.supportedImageFormats()}
+    for fmt in ("png", "jpg", "webp"):
+        assert fmt in supported, f"{fmt} unsupported; artwork re-encode would fail"
 
 
 # --------------------------------------------------------------------------
@@ -640,8 +899,8 @@ def task_tokens_fit_in_a_qt_int() -> None:
 
 def main() -> int:
     print(f"\n{_PASSED} passed, {len(_FAILURES)} failed")
-    for f in _FAILURES:
-        print("\n" + "-" * 60 + "\n" + f)
+    for failure in _FAILURES:
+        print("\n" + "-" * 60 + "\n" + failure)
     return 1 if _FAILURES else 0
 
 

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-from launcher.core.paths import BASE_DIR, PREFIX_NAME_FILE, PREFIXES_DIR
+from launcher.data.paths import Paths
 
 #: An empty prefix value means "use the shared prefix".
 SHARED = ""
@@ -57,11 +57,11 @@ class PrefixInfo:
         return (self.path / "pfx").is_dir()
 
 
-def shared_prefix_name() -> str:
+def shared_prefix_name(paths: Paths) -> str:
     """The shared prefix folder name, honouring the .prefix-name override."""
-    if PREFIX_NAME_FILE.is_file():
+    if paths.prefix_name_file.is_file():
         try:
-            first = PREFIX_NAME_FILE.read_text(encoding="utf-8").splitlines()
+            first = paths.prefix_name_file.read_text(encoding="utf-8").splitlines()
         except OSError:
             return _DEFAULT_PREFIX_NAME
         if first and first[0].strip():
@@ -69,12 +69,12 @@ def shared_prefix_name() -> str:
     return _DEFAULT_PREFIX_NAME
 
 
-def shared_prefix_path() -> Path:
+def shared_prefix_path(paths: Paths) -> Path:
     """The prefix used by every game that does not name its own."""
-    return BASE_DIR / shared_prefix_name()
+    return paths.base / shared_prefix_name(paths)
 
 
-def resolve(raw: str) -> Path:
+def resolve(raw: str, paths: Paths) -> Path:
     """Resolve a configured prefix value to a path.
 
     Empty means the shared prefix; ``~`` expands; a relative path is taken
@@ -82,22 +82,22 @@ def resolve(raw: str) -> Path:
     """
     value = raw.strip()
     if not value:
-        return shared_prefix_path()
+        return shared_prefix_path(paths)
     if value.startswith("~"):
         return Path(value).expanduser()
     path = Path(value)
     if path.is_absolute():
         return path
-    return BASE_DIR / path
+    return paths.base / path
 
 
 def suggest(game_name: str) -> str:
     """A sensible per-game prefix path, relative to the launcher directory."""
     safe = _UNSAFE.sub("-", game_name).strip("-") or "game"
-    return f"{PREFIXES_DIR.name}/{safe}"
+    return f"prefixes/{safe}"
 
 
-def _reachable_from_sandbox(path: Path) -> bool:
+def _reachable_from_sandbox(path: Path, paths: Paths) -> bool:
     """Whether the Steam Flatpak is likely to be able to see this path.
 
     The game runs through `flatpak enter` into the Steam container, so a
@@ -108,22 +108,22 @@ def _reachable_from_sandbox(path: Path) -> bool:
         resolved = path.resolve()
     except OSError:
         return False
-    for root in (BASE_DIR.resolve(), Path.home().resolve()):
+    for root in (paths.base.resolve(), Path.home().resolve()):
         if resolved == root or root in resolved.parents:
             return True
     return False
 
 
-def inspect(raw: str) -> PrefixInfo:
+def inspect(raw: str, paths: Paths) -> PrefixInfo:
     """Describe a configured prefix value for display."""
-    path = resolve(raw)
+    path = resolve(raw, paths)
 
     if not raw.strip():
         return PrefixInfo(
             raw=raw,
             path=path,
             state=PrefixState.SHARED,
-            message=f"Shared prefix ({shared_prefix_name()})",
+            message=f"Shared prefix ({shared_prefix_name(paths)})",
         )
 
     if path.exists() and not path.is_dir():
@@ -134,7 +134,7 @@ def inspect(raw: str) -> PrefixInfo:
             message="A file already exists at this path.",
         )
 
-    if not _reachable_from_sandbox(path):
+    if not _reachable_from_sandbox(path, paths):
         return PrefixInfo(
             raw=raw,
             path=path,
@@ -157,13 +157,13 @@ def inspect(raw: str) -> PrefixInfo:
     )
 
 
-def describe(raw: str) -> str:
+def describe(raw: str, paths: Paths) -> str:
     """One line summarising a prefix, for the detail panel."""
-    info = inspect(raw)
+    info = inspect(raw, paths)
     if info.is_shared:
-        return f"Shared ({shared_prefix_name()})"
+        return f"Shared ({shared_prefix_name(paths)})"
     try:
-        shown = info.path.relative_to(BASE_DIR)
+        shown = info.path.relative_to(paths.base)
     except ValueError:
         shown = info.path
     suffix = "" if info.path.is_dir() else "  (not created yet)"

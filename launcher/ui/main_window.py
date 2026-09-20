@@ -1,9 +1,16 @@
-"""Main application window: sidebar, detail panel and an alternate grid view."""
+"""The main window.
+
+A view: it renders what the controller exposes and forwards what the user
+does. It never touches repositories or the filesystem directly.
+"""
 
 from __future__ import annotations
 
+import contextlib
+from pathlib import Path
+
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QTextDocument
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -13,25 +20,19 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QStatusBar,
     QVBoxLayout,
     QWidget,
 )
 
-from launcher.core.games import (
-    Game,
-    add_game,
-    remove_game,
-    rename_game,
-    scan_games,
-    toggle_favorite,
-    update_game,
-)
-from launcher.core.settings import get_flag, get_sgdb_api_key, set_flag
-from launcher.services import artwork
-from launcher.services.process import ProcessManager
+from launcher.app.library_controller import LibraryController
+from launcher.domain.models import Game, SortOrder
 from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
 from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask, warn
 from launcher.ui.dialogs.game_dialog import AddGameDialog
+from launcher.ui.dialogs.import_dialog import ImportGamesDialog
+from launcher.ui.dialogs.restore_dialog import RestoreBackupDialog
+from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 from launcher.ui.widgets import log_view
 from launcher.ui.widgets.detail_panel import GameDetailPanel
@@ -43,29 +44,24 @@ _GRID_VIEW = 1
 
 
 class MainWindow(QMainWindow):
-    """The main application window."""
+    """The library window: sidebar, detail panel and an alternate grid."""
 
-    def __init__(self) -> None:
+    def __init__(self, controller: LibraryController) -> None:
         super().__init__()
+        self._lib = controller
+        self._ctx = controller.context
         self.setWindowTitle("Game Launcher")
         self.setMinimumSize(1024, 700)
         self.resize(1280, 800)
 
-        self._games: list[Game] = []
-        #: One log buffer per game, kept whether or not that game is selected.
+        #: One log buffer per game, kept whether or not it is selected.
         self._logs: dict[str, QTextDocument] = {}
-
-        self._process_mgr = ProcessManager(self)
-        self._process_mgr.game_started.connect(self._on_game_started)
-        self._process_mgr.game_finished.connect(self._on_game_finished)
-        self._process_mgr.game_output.connect(self._on_game_output)
-        self._process_mgr.game_error.connect(self._on_game_output)
-
         self._artwork_sticky = StickyChoice()
         self._remove_sticky = StickyChoice()
 
         self._setup_ui()
-        self._load_games()
+        self._connect()
+        self._lib.reload()
 
     # -- construction --------------------------------------------------
 
@@ -75,13 +71,16 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
         root.addWidget(self._build_top_bar())
 
         self._views = QStackedWidget()
         self._views.addWidget(self._build_library_view())
         self._views.addWidget(self._build_grid_view())
         root.addWidget(self._views, stretch=1)
+
+        self.setStatusBar(QStatusBar())
+        self._restore_view_mode()
+        self._install_shortcuts()
 
     def _build_top_bar(self) -> QFrame:
         bar = QFrame()
@@ -110,6 +109,10 @@ class MainWindow(QMainWindow):
         cleanup_btn.clicked.connect(self._clean_up_artwork)
         layout.addWidget(cleanup_btn)
 
+        settings_btn = QPushButton("Settings…")
+        settings_btn.setFixedHeight(32)
+        settings_btn.clicked.connect(self._open_settings)
+        layout.addWidget(settings_btn)
         return bar
 
     def _build_library_view(self) -> QWidget:
@@ -122,28 +125,17 @@ class MainWindow(QMainWindow):
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(1)
 
-        self._sidebar = LibrarySidebar()
+        self._sidebar = LibrarySidebar(self._ctx.artwork)
         self._sidebar.setMinimumWidth(240)
-        self._sidebar.setMaximumWidth(420)
-        self._sidebar.selection_changed.connect(self._select_game)
-        self._sidebar.launch_requested.connect(self._launch_game)
-        self._sidebar.add_requested.connect(self._add_game)
-        self._sidebar.filters_changed.connect(self._apply_filter)
+        self._sidebar.setMaximumWidth(460)
         splitter.addWidget(self._sidebar)
 
-        self._detail = GameDetailPanel()
-        self._detail.play_requested.connect(self._launch_game)
-        self._detail.stop_requested.connect(self._on_stop_game)
-        self._detail.edit_requested.connect(self._edit_game)
-        self._detail.favorite_requested.connect(self._toggle_favorite)
-        self._detail.artwork_requested.connect(self._fetch_artwork)
-        self._detail.remove_requested.connect(self._remove_game)
-        self._detail.clear_log_requested.connect(self._clear_log)
+        self._detail = GameDetailPanel(self._ctx.artwork, self._ctx.paths)
         splitter.addWidget(self._detail)
 
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([280, 1000])
+        splitter.setSizes([300, 980])
         layout.addWidget(splitter)
         return page
 
@@ -152,192 +144,240 @@ class MainWindow(QMainWindow):
         page.setObjectName("gridPage")
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-
-        self._game_grid = GameGrid()
-        self._game_grid.play_requested.connect(self._launch_game)
-        self._game_grid.favorite_requested.connect(self._toggle_favorite)
-        self._game_grid.edit_requested.connect(self._edit_game)
-        self._game_grid.remove_requested.connect(self._remove_game)
-        self._game_grid.fetch_artwork_requested.connect(self._fetch_artwork)
+        self._game_grid = GameGrid(self._ctx.artwork)
         layout.addWidget(self._game_grid)
         return page
 
-    def _switch_view(self, index: int) -> None:
-        self._views.setCurrentIndex(index)
-        self._apply_filter()
+    def _connect(self) -> None:
+        lib = self._lib
+        lib.library_changed.connect(self._render_library)
+        lib.game_changed.connect(self._on_game_changed)
+        lib.error.connect(lambda title, text: warn(self, title, text))
+        lib.status.connect(lambda text: self.statusBar().showMessage(text, 6000))
 
-    # -- data ----------------------------------------------------------
+        side = self._sidebar
+        side.selection_changed.connect(self._select_game)
+        side.launch_requested.connect(self._launch_game)
+        side.add_requested.connect(self._add_game)
+        side.import_requested.connect(self._import_games)
+        side.filters_changed.connect(self._on_filters_changed)
+        side.sort_changed.connect(self._on_sort_changed)
 
-    def _load_games(self, *, select: str | None = None) -> None:
-        self._games = scan_games()
-        missing = [g for g in self._games if not g.executable_exists]
-        if missing and not get_flag("skip_missing_check"):
-            removed = self._handle_missing_executables(missing)
-            if removed:
-                self._games = [g for g in self._games if g.name not in removed]
+        detail = self._detail
+        detail.play_requested.connect(self._launch_game)
+        detail.stop_requested.connect(self._lib.stop)
+        detail.edit_requested.connect(self._edit_game)
+        detail.favorite_requested.connect(self._lib.toggle_favorite)
+        detail.artwork_requested.connect(self._fetch_artwork)
+        detail.remove_requested.connect(self._remove_game)
+        detail.clear_log_requested.connect(self._clear_log)
+        detail.prefix_tool_requested.connect(self._run_prefix_tool)
+        detail.backup_requested.connect(self._backup_saves)
+        detail.restore_requested.connect(self._restore_saves)
+        detail.artwork_dropped.connect(self._artwork_dropped)
 
-        self._sidebar.set_games(self._games, select=select)
-        self._game_grid.set_games(self._games)
-        for name in self._process_mgr.running_games:
+        grid = self._game_grid
+        grid.play_requested.connect(self._launch_game)
+        grid.favorite_requested.connect(self._lib.toggle_favorite)
+        grid.edit_requested.connect(self._edit_game)
+        grid.remove_requested.connect(self._remove_game)
+        grid.fetch_artwork_requested.connect(self._fetch_artwork)
+
+        procs = self._ctx.processes
+        procs.game_started.connect(self._on_game_started)
+        procs.game_finished.connect(self._on_game_finished)
+        procs.game_output.connect(self._on_game_output)
+        procs.game_error.connect(self._on_game_output)
+
+        tools = self._ctx.prefix_tools
+        tools.tool_failed.connect(lambda label, msg: warn(self, label, msg))
+        tools.tool_started.connect(
+            lambda label: self.statusBar().showMessage(f"Started {label}.", 4000)
+        )
+
+    def _install_shortcuts(self) -> None:
+        """Keyboard access to the things people do repeatedly."""
+        shortcuts: tuple[tuple[QKeySequence | QKeySequence.StandardKey, object], ...] = (
+            (QKeySequence.StandardKey.Find, self._focus_search),
+            (QKeySequence("Ctrl+N"), self._add_game),
+            (QKeySequence("Ctrl+I"), self._import_games),
+            (QKeySequence("Ctrl+,"), self._open_settings),
+            (QKeySequence("Ctrl+E"), self._edit_selected),
+            (QKeySequence("Ctrl+R"), self._lib.reload),
+            (QKeySequence("F5"), self._lib.reload),
+            (QKeySequence("Ctrl+P"), self._play_selected),
+        )
+        for keys, handler in shortcuts:
+            QShortcut(keys, self).activated.connect(handler)
+
+    # -- rendering -----------------------------------------------------
+
+    def _render_library(self) -> None:
+        visible = self._lib.visible_games()
+        selected = self._sidebar.selected_game()
+        self._sidebar.set_games(visible, select=selected)
+        self._sidebar.set_sort_order(self._lib.sort_order.value)
+        self._game_grid.set_games(visible)
+        for name in self._ctx.processes.running_games:
             self._sidebar.set_running(name, True)
-        self._apply_filter()
+            self._game_grid.set_running(name, True)
+        if not visible:
+            self._detail.set_game(None)
 
-    def _handle_missing_executables(self, missing: list[Game]) -> set[str]:
-        """Ask about each game whose executable is gone.
+    def _on_game_changed(self, name: str) -> None:
+        game = self._lib.game(name)
+        if game is None:
+            return
+        self._sidebar.set_games(self._lib.visible_games(), select=name)
+        self._game_grid.set_favorite(name, game.is_favorite)
+        if self._detail_shows(name):
+            self._detail.set_game(game)
 
-        Only configurations the user actually confirmed are deleted; the names
-        of those are returned. Everything else stays on disk and in the library
-        so that a game on an unplugged drive is not silently lost.
-        """
-        removed: set[str] = set()
-        sticky = StickyChoice()
-        for game in missing:
-            answer = ask(
-                self,
-                "Game Not Found",
-                f"Game executable not found:\n{game.executable}\n({game.name})\n\n"
-                "Remove this configuration?",
-                buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.DONT_ASK),
-                default=Answer.NO,
-                icon=QMessageBox.Icon.Warning,
-                sticky=sticky,
-                persist_key="skip_missing_check",
-            )
-            if answer is Answer.DONT_ASK:
-                # Silences the prompt; it does not delete anything.
-                break
-            if answer in (Answer.YES, Answer.YES_ALL) and remove_game(game.name):
-                removed.add(game.name)
-        return removed
+    def _detail_shows(self, name: str) -> bool:
+        return self._sidebar.selected_game() == name
 
-    def _apply_filter(self) -> None:
-        text = self._sidebar.search_text()
-        favs_only = self._sidebar.favorites_only()
-        fav_names = {g.name for g in self._games if g.is_favorite}
-        self._sidebar.apply_filter(text, favs_only, fav_names)
-        self._game_grid.filter_cards(text, favs_only, fav_names)
-
-    def _game(self, game_name: str) -> Game | None:
-        return next((g for g in self._games if g.name == game_name), None)
-
-    def _select_game(self, game_name: str) -> None:
+    def _select_game(self, name: str) -> None:
         """Show a game's details. This never launches anything."""
-        game = self._game(game_name) if game_name else None
+        game: Game | None = self._lib.game(name) if name else None
         self._detail.set_game(game)
         if game is None:
             self._detail.attach_log(None)
             return
         self._detail.attach_log(self._logs.get(game.name))
-        self._detail.set_running(self._process_mgr.is_running(game.name))
+        self._detail.set_running(self._lib.is_running(game.name))
 
-    def _detail_shows(self, game_name: str) -> bool:
-        return self._sidebar.selected_game() == game_name
+    def _selected(self) -> str | None:
+        return self._sidebar.selected_game()
 
-    # -- actions -------------------------------------------------------
+    # -- filters and views ---------------------------------------------
 
-    def _launch_game(self, game_name: str) -> None:
-        if not self._process_mgr.launch(game_name):
+    def _on_filters_changed(self) -> None:
+        self._lib.set_search(self._sidebar.search_text())
+        self._lib.set_favorites_only(self._sidebar.favorites_only())
+
+    def _on_sort_changed(self, value: str) -> None:
+        with contextlib.suppress(ValueError):
+            self._lib.set_sort_order(SortOrder(value))
+
+    def _switch_view(self, index: int) -> None:
+        self._views.setCurrentIndex(index)
+        self._ctx.settings.set("view_mode", "grid" if index else "list")
+
+    def _restore_view_mode(self) -> None:
+        index = _GRID_VIEW if self._ctx.settings.get_str("view_mode") == "grid" else _LIST_VIEW
+        button = self._view_group.button(index)
+        if button is not None:
+            button.setChecked(True)
+        self._views.setCurrentIndex(index)
+
+    def _focus_search(self) -> None:
+        if self._views.currentIndex() != _LIST_VIEW:
+            self._switch_view(_LIST_VIEW)
+        self._sidebar.focus_search()
+
+    # -- game actions --------------------------------------------------
+
+    def _launch_game(self, name: str) -> None:
+        if not self._lib.launch(name):
             return
         if self._views.currentIndex() == _GRID_VIEW:
             button = self._view_group.button(_LIST_VIEW)
             if button is not None:
                 button.setChecked(True)
             self._switch_view(_LIST_VIEW)
-        self._sidebar.select_game(game_name)
+        self._sidebar.select_game(name)
 
-    def _on_stop_game(self, game_name: str) -> None:
-        self._process_mgr.stop(game_name)
+    def _play_selected(self) -> None:
+        if (name := self._selected()) is not None:
+            self._launch_game(name)
 
-    def _toggle_favorite(self, game_name: str) -> None:
-        new_state = toggle_favorite(game_name)
-        self._game_grid.set_favorite(game_name, new_state)
-        for g in self._games:
-            if g.name == game_name:
-                g.is_favorite = new_state
-                break
-        self._sidebar.set_games(self._games, select=game_name)
-        self._apply_filter()
-        if self._detail_shows(game_name):
-            self._detail.set_game(self._game(game_name))
+    def _edit_selected(self) -> None:
+        if (name := self._selected()) is not None:
+            self._edit_game(name)
 
     def _add_game(self) -> None:
-        dialog = AddGameDialog(parent=self)
+        dialog = AddGameDialog(self._ctx.paths, parent=self)
         if not dialog.exec():
             return
-        game = dialog.get_game()
-        add_game(game)
-        self._load_games(select=game.name)
+        config = dialog.get_config()
+        if not self._lib.add_game(config):
+            return
+        self._sidebar.select_game(config.name)
 
-        if get_sgdb_api_key():
+        if self._ctx.sgdb.configured and self._ctx.settings.get_bool(
+            "fetch_artwork_on_add"
+        ):
             answer = ask(
                 self,
                 "Fetch Artwork?",
-                f"Fetch hero/grid artwork from SteamGridDB for '{game.name}'?",
+                f"Fetch artwork from SteamGridDB for '{config.name}'?",
                 buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.NO_ALL),
                 default=Answer.YES,
                 sticky=self._artwork_sticky,
             )
             if answer in (Answer.YES, Answer.YES_ALL):
-                self._fetch_artwork(game.name)
+                self._fetch_artwork(config.name)
 
-    def _edit_game(self, game_name: str) -> None:
-        game = self._game(game_name)
+    def _import_games(self) -> None:
+        dialog = ImportGamesDialog(self._ctx, parent=self)
+        if dialog.exec() and dialog.added:
+            self._lib.reload()
+            self.statusBar().showMessage(
+                f"Imported {len(dialog.added)} game(s).", 6000
+            )
+            self._sidebar.select_game(dialog.added[0])
+
+    def _edit_game(self, name: str) -> None:
+        game = self._lib.game(name)
         if game is None:
             return
-        dialog = AddGameDialog(game=game, parent=self)
+        dialog = AddGameDialog(self._ctx.paths, game=game, parent=self)
         if not dialog.exec():
             return
+        if self._lib.update_game(name, dialog.get_config()):
+            self._sidebar.select_game(dialog.get_config().name)
 
-        updated = dialog.get_game()
-        if updated.name != game.name:
-            # The conf stem is the game's identity, so a rename has to move
-            # the conf, the artwork and the favourite together.
-            try:
-                updated.conf_path = rename_game(game.name, updated.name)
-            except FileExistsError:
-                warn(
-                    self,
-                    "Rename Failed",
-                    f"A game named '{updated.name}' already exists.",
-                )
+    def _remove_game(self, name: str) -> None:
+        if self._ctx.settings.get_bool("confirm_remove"):
+            answer = ask(
+                self,
+                "Remove Game",
+                f"Remove '{name}' from the launcher?\n\n"
+                "Its configuration and artwork are deleted. Saved games and "
+                "the Wine prefix are left alone.",
+                buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.NO_ALL),
+                default=Answer.NO,
+                sticky=self._remove_sticky,
+            )
+            if answer not in (Answer.YES, Answer.YES_ALL):
                 return
-            except OSError as e:
-                warn(self, "Rename Failed", str(e))
-                return
-            if game.name in self._logs:
-                self._logs[updated.name] = self._logs.pop(game.name)
-        else:
-            updated.conf_path = game.conf_path
+        self._logs.pop(name, None)
+        self._lib.remove_game(name)
 
-        update_game(updated)
-        self._load_games(select=updated.name)
+    # -- artwork -------------------------------------------------------
 
-    def _remove_game(self, game_name: str) -> None:
+    def _fetch_artwork(self, name: str) -> None:
+        game = self._lib.game(name)
+        dialog = SGDBDialog(
+            self._ctx,
+            game_name=name,
+            steam_app_id=game.config.game_id if game else "",
+            parent=self,
+        )
+        dialog.artwork_downloaded.connect(lambda _: self._lib.refresh_game(name))
+        dialog.exec()
+
+    def _artwork_dropped(self, name: str, path: str) -> None:
         answer = ask(
             self,
-            "Remove Game",
-            f"Remove '{game_name}' from the launcher?\n\n"
-            "Its configuration and artwork are deleted. Saved games and the "
-            "Wine prefix are left alone.",
-            buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.NO_ALL),
-            default=Answer.NO,
-            sticky=self._remove_sticky,
+            "Set Artwork",
+            f"Use this image as artwork for '{name}'?\n\n{Path(path).name}",
         )
-        if answer in (Answer.YES, Answer.YES_ALL):
-            remove_game(game_name)
-            self._logs.pop(game_name, None)
-            self._load_games()
-
-    def _fetch_artwork(self, game_name: str) -> None:
-        game = self._game(game_name)
-        steam_id = game.game_id if game else ""
-        dlg = SGDBDialog(game_name=game_name, steam_app_id=steam_id, parent=self)
-        dlg.artwork_downloaded.connect(lambda _: self._load_games(select=game_name))
-        dlg.exec()
+        if answer is Answer.YES:
+            self._lib.set_artwork_from_file(name, Path(path), "grid")
 
     def _clean_up_artwork(self, *, only_if_worthwhile: bool = False) -> None:
-        """Scan stored artwork and offer to tidy it up."""
-        report = artwork.scan({g.name for g in self._games})
+        report = self._ctx.cleaner.scan({g.name for g in self._lib.games})
         if report.is_empty:
             if not only_if_worthwhile:
                 QMessageBox.information(
@@ -347,7 +387,7 @@ class MainWindow(QMainWindow):
                 )
             return
 
-        dialog = ArtworkCleanupDialog(report, self)
+        dialog = ArtworkCleanupDialog(self._ctx.cleaner, report, self)
         if dialog.exec() and dialog.result_summary is not None:
             summary = dialog.result_summary
             if summary.errors:
@@ -357,7 +397,10 @@ class MainWindow(QMainWindow):
                     "Some files could not be cleaned up:\n"
                     + "\n".join(summary.errors[:10]),
                 )
-            self._load_games(select=self._sidebar.selected_game())
+            self.statusBar().showMessage(
+                f"Reclaimed {human(summary.freed)} of artwork.", 8000
+            )
+            self._lib.reload()
 
     def offer_artwork_cleanup(self) -> None:
         """Offer the cleanup once, the first time it would help.
@@ -366,41 +409,135 @@ class MainWindow(QMainWindow):
         opens a modal dialog, and doing so during construction blocks
         before the window is even visible.
         """
-        if get_flag("artwork_cleanup_prompted"):
+        if self._ctx.settings.get_bool("artwork_cleanup_prompted"):
             return
-        set_flag("artwork_cleanup_prompted", True)
+        self._ctx.settings.set("artwork_cleanup_prompted", True)
         self._clean_up_artwork(only_if_worthwhile=True)
+
+    # -- prefix tools and saves ----------------------------------------
+
+    def _run_prefix_tool(self, name: str, tool: str) -> None:
+        game = self._lib.game(name)
+        if game is None:
+            return
+        if tool == "open":
+            self._ctx.prefix_tools.open_folder(game.prefix)
+        else:
+            self._ctx.prefix_tools.run(tool, game.prefix)
+
+    def _backup_saves(self, name: str) -> None:
+        game = self._lib.game(name)
+        if game is None:
+            return
+        self.statusBar().showMessage(f"Backing up saves for {name}…")
+        try:
+            backup = self._ctx.saves.create_backup(name, game.prefix)
+        except (OSError, FileNotFoundError) as e:
+            self.statusBar().clearMessage()
+            warn(self, "Backup Failed", str(e))
+            return
+        self.statusBar().showMessage(
+            f"Backed up {human(backup.size)} to {backup.path.name}.", 8000
+        )
+
+    def _restore_saves(self, name: str) -> None:
+        game = self._lib.game(name)
+        if game is None:
+            return
+        backups = self._ctx.saves.list_backups(name)
+        if not backups:
+            QMessageBox.information(
+                self,
+                "Restore Saves",
+                f"There are no backups for '{name}' yet.\n\n"
+                "Use Saves → Back up now to make one.",
+            )
+            return
+
+        dialog = RestoreBackupDialog(name, backups, self)
+        outcome = dialog.exec()
+        if outcome == 2 and dialog.delete_requested is not None:
+            self._ctx.saves.delete_backup(dialog.delete_requested)
+            self.statusBar().showMessage("Backup deleted.", 4000)
+            return
+        if not outcome or dialog.selected is None:
+            return
+
+        if ask(
+            self,
+            "Restore Saves",
+            f"Restore the backup from {dialog.selected.label} into "
+            f"'{name}'?\n\nFiles it contains will be overwritten.",
+            default=Answer.NO,
+        ) is not Answer.YES:
+            return
+
+        try:
+            count = self._ctx.saves.restore(dialog.selected, game.prefix)
+        except (OSError, FileNotFoundError) as e:
+            warn(self, "Restore Failed", str(e))
+            return
+        self.statusBar().showMessage(f"Restored {count} file(s).", 8000)
+
+    # -- settings ------------------------------------------------------
+
+    def _open_settings(self) -> None:
+        before = self._ctx.settings.get_bool("hide_missing")
+        SettingsDialog(self._ctx, parent=self).exec()
+        after = self._ctx.settings.get_bool("hide_missing")
+        if before != after:
+            self._lib.set_hide_missing(after)
 
     # -- process signals -----------------------------------------------
 
-    def _log_for(self, game_name: str) -> QTextDocument:
-        doc = self._logs.get(game_name)
+    def _log_for(self, name: str) -> QTextDocument:
+        doc = self._logs.get(name)
         if doc is None:
-            doc = log_view.new_document()
-            self._logs[game_name] = doc
+            doc = log_view.new_document(
+                self._ctx.settings.get_int("log_max_lines")
+            )
+            self._logs[name] = doc
         return doc
 
-    def _clear_log(self, game_name: str) -> None:
-        self._logs[game_name] = log_view.new_document()
-        if self._detail_shows(game_name):
-            self._detail.attach_log(self._logs[game_name])
+    def _clear_log(self, name: str) -> None:
+        self._logs[name] = log_view.new_document(
+            self._ctx.settings.get_int("log_max_lines")
+        )
+        if self._detail_shows(name):
+            self._detail.attach_log(self._logs[name])
 
-    def _on_game_started(self, game_name: str) -> None:
-        self._log_for(game_name)
-        self._game_grid.set_running(game_name, True)
-        self._sidebar.set_running(game_name, True)
-        if self._detail_shows(game_name):
-            self._detail.attach_log(self._logs[game_name])
+    def _on_game_started(self, name: str) -> None:
+        self._log_for(name)
+        self._game_grid.set_running(name, True)
+        self._sidebar.set_running(name, True)
+        if self._detail_shows(name):
+            self._detail.attach_log(self._logs[name])
             self._detail.set_running(True)
 
-    def _on_game_finished(self, game_name: str, _exit_code: int) -> None:
-        self._game_grid.set_running(game_name, False)
-        self._sidebar.set_running(game_name, False)
-        if self._detail_shows(game_name):
+    def _on_game_finished(self, name: str, _exit_code: int) -> None:
+        self._game_grid.set_running(name, False)
+        self._sidebar.set_running(name, False)
+        if self._detail_shows(name):
             self._detail.set_running(False)
 
-    def _on_game_output(self, game_name: str, text: str) -> None:
+    def _on_game_output(self, name: str, text: str) -> None:
         # Buffers accumulate whether or not the game is on screen.
-        log_view.append(self._log_for(game_name), text)
-        if self._detail_shows(game_name):
+        log_view.append(self._log_for(name), text)
+        if self._detail_shows(name):
             self._detail.follow_log()
+
+    # -- lifetime ------------------------------------------------------
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        running = self._ctx.processes.running_games
+        if running and ask(
+            self,
+            "Quit",
+            "These games are still running:\n  "
+            + "\n  ".join(running)
+            + "\n\nQuit anyway? They will keep running.",
+            default=Answer.NO,
+        ) is not Answer.YES:
+            event.ignore()
+            return
+        super().closeEvent(event)

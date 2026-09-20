@@ -21,8 +21,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.core.settings import get_sgdb_api_key, set_sgdb_api_key
-from launcher.services import artwork
+from launcher.app.context import AppContext
+from launcher.services.artwork import GRID, HERO
 from launcher.services.sgdb import (
     download_bytes,
     get_grids,
@@ -121,11 +121,13 @@ class SGDBDialog(QDialog):
 
     def __init__(
         self,
+        context: AppContext,
         game_name: str = "",
         steam_app_id: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._ctx = context
         self.game_name = game_name
         self.steam_app_id = steam_app_id
         self.setWindowTitle("SteamGridDB Artwork")
@@ -148,7 +150,7 @@ class SGDBDialog(QDialog):
         layout.setSpacing(10)
         layout.setContentsMargins(16, 16, 16, 16)
 
-        api_key = get_sgdb_api_key()
+        api_key = self._ctx.sgdb.api_key
         if not api_key:
             info = QLabel(
                 "Enter your SteamGridDB API key to search for artwork.\n"
@@ -221,7 +223,7 @@ class SGDBDialog(QDialog):
 
     def _save_key(self) -> None:
         key = self._key_edit.text().strip()
-        set_sgdb_api_key(key)
+        self._ctx.sgdb.set_api_key(key)
         self._status_label.setText("API key saved.")
 
     def _search(self) -> None:
@@ -254,7 +256,7 @@ class SGDBDialog(QDialog):
             tile.set_pixmap(QPixmap.fromImage(result))
 
     def _on_task_failed(self, token: int, message: str) -> None:
-        if token == self._search_token or token == self._download_token:
+        if token in (self._search_token, self._download_token):
             self._show_error(message)
         else:
             # A thumbnail that will not load just stays blank.
@@ -311,7 +313,7 @@ class SGDBDialog(QDialog):
         if not game_name:
             warn(self, "Missing Name", "No game name available.")
             return
-        art = artwork.HERO.name if self._type_combo.currentText() == "Heroes" else artwork.GRID.name
+        art = HERO.name if self._type_combo.currentText() == "Heroes" else GRID.name
         self._download_btn.setEnabled(False)
         self._status_label.setText("Downloading\u2026")
         self._download_token = self._tasks.submit(
@@ -322,7 +324,7 @@ class SGDBDialog(QDialog):
         # Storing happens here, not on the worker: it writes the file and
         # invalidates the shared pixmap cache.
         try:
-            path = artwork.store(result.game_name, result.art, result.data)
+            path = self._ctx.artwork.store(result.game_name, result.art, result.data)
         except OSError as e:
             self._show_error(f"Could not save artwork: {e}")
             return

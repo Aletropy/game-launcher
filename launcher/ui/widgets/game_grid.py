@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QWidgetItem,
 )
 
-from launcher.core.games import Game
+from launcher.domain.models import Game
+from launcher.services.artwork import ArtworkService
 from launcher.ui.widgets.game_card import GameCard
 
 
@@ -26,8 +27,11 @@ class GameGrid(QWidget):
     remove_requested = Signal(str)
     fetch_artwork_requested = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, artwork: ArtworkService, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
+        self._artwork = artwork
         self._cards: list[GameCard] = []
         self._setup_ui()
 
@@ -56,7 +60,7 @@ class GameGrid(QWidget):
     def set_games(self, games: list[Game]) -> None:
         self.clear()
         for game in games:
-            card = GameCard(game)
+            card = GameCard(game, self._artwork)
             card.play_clicked.connect(self.play_requested)
             card.favorite_clicked.connect(self.favorite_requested)
             card.edit_clicked.connect(self.edit_requested)
@@ -94,7 +98,12 @@ class GameGrid(QWidget):
         self._empty_label.setVisible(len(self._cards) == 0)
         self._scroll.setVisible(len(self._cards) > 0)
 
-    def filter_cards(self, text: str, favorites_only: bool = False, fav_names: set[str] | None = None) -> None:
+    def filter_cards(
+        self,
+        text: str,
+        favorites_only: bool = False,
+        fav_names: set[str] | None = None,
+    ) -> None:
         visible_count = 0
         for card in self._cards:
             matches_text = text.lower() in card.game.name.lower() if text else True
@@ -114,7 +123,12 @@ class GameGrid(QWidget):
 class FlowLayout(QLayout):
     """Flow layout that wraps children left-to-right, top-to-bottom."""
 
-    def __init__(self, parent: QWidget | None = None, hspacing: int = 16, vspacing: int = 16) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        hspacing: int = 16,
+        vspacing: int = 16,
+    ) -> None:
         super().__init__(parent)
         self._hspacing = hspacing
         self._vspacing = vspacing
@@ -151,7 +165,7 @@ class FlowLayout(QLayout):
     def heightForWidth(self, width: int) -> int:
         return self._do_layout(width, dry=True)
 
-    def setGeometry(self, rect) -> None:  # type: ignore[override]
+    def setGeometry(self, rect) -> None:
         super().setGeometry(rect)
         self._do_layout(rect.width(), dry=False)
 

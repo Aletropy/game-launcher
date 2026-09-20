@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 MAX_LINES = 5000
 
 
-def new_document() -> QTextDocument:
+def new_document(max_lines: int = MAX_LINES) -> QTextDocument:
     """A log buffer for one game.
 
     QPlainTextEdit refuses a document that does not carry a
@@ -26,7 +26,7 @@ def new_document() -> QTextDocument:
     """
     doc = QTextDocument()
     doc.setDocumentLayout(QPlainTextDocumentLayout(doc))
-    doc.setMaximumBlockCount(MAX_LINES)
+    doc.setMaximumBlockCount(max(100, max_lines))
     doc.setDefaultFont(QFont("Monospace", 10))
     return doc
 

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from launcher.data.settings_store import SettingsStore
+
 import json
 import urllib.parse
 import urllib.request
@@ -36,6 +41,52 @@ def _api_get(endpoint: str, api_key: str, params: dict | None = None) -> dict:
             raise SGDBError(f"HTTP {e.code}: {body[:200]}") from e
     except urllib.error.URLError as e:
         raise SGDBError(f"Network error: {e.reason}") from e
+
+
+class SgdbClient:
+    """SteamGridDB, with the API key taken from settings."""
+
+    def __init__(self, settings: SettingsStore) -> None:
+        self._settings = settings
+
+    @property
+    def api_key(self) -> str:
+        return self._settings.get_str("sgdb_api_key")
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.api_key)
+
+    def set_api_key(self, key: str) -> None:
+        self._settings.set("sgdb_api_key", key.strip())
+
+    def search(self, query: str) -> list[dict]:
+        return search_games(query, self.api_key)
+
+    def heroes(self, game_id: int) -> list[dict]:
+        return get_heroes(game_id, self.api_key)
+
+    def grids(self, game_id: int) -> list[dict]:
+        return get_grids(game_id, self.api_key)
+
+    def artwork_for(self, query: str, art_type: str) -> list[dict]:
+        """Look a game up by name and return its artwork of one type."""
+        matches = self.search(query)
+        if not matches:
+            raise SGDBError("No games found.")
+        game_id = matches[0]["id"]
+        return self.heroes(game_id) if art_type == "hero" else self.grids(game_id)
+
+    def verify_key(self, key: str) -> str:
+        """Check a key works. Returns a message describing the result."""
+        try:
+            search_games("portal", key)
+        except SGDBError as e:
+            return f"Key rejected: {e}"
+        return "Key works."
+
+    def download(self, url: str) -> bytes:
+        return download_bytes(url)
 
 
 def search_games(query: str, api_key: str) -> list[dict]:

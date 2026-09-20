@@ -84,8 +84,8 @@ def load(conf_path: str | Path) -> dict[str, str | list[str]]:
     if not path.is_file():
         return data
 
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         m = _KEY_RE.match(line)

@@ -14,8 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.services import artwork
-from launcher.services.artwork import CleanupReport, CleanupResult
+from launcher.services.artwork import ArtworkCleaner, CleanupReport, CleanupResult
 
 
 def human(num_bytes: int) -> str:
@@ -31,8 +30,14 @@ def human(num_bytes: int) -> str:
 class ArtworkCleanupDialog(QDialog):
     """Summarise a scan and apply the actions the user keeps ticked."""
 
-    def __init__(self, report: CleanupReport, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        cleaner: ArtworkCleaner,
+        report: CleanupReport,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._cleaner = cleaner
         self.report = report
         self.result_summary: CleanupResult | None = None
 
@@ -152,7 +157,7 @@ class ArtworkCleanupDialog(QDialog):
     def _apply(self) -> None:
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.result_summary = artwork.apply_cleanup(
+            self.result_summary = self._cleaner.apply(
                 self.report,
                 reencode=self._reencode.isChecked(),
                 dedupe=self._dedupe.isChecked(),

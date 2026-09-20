@@ -6,6 +6,7 @@ from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QHBoxLayout,
     QLineEdit,
     QListWidget,
@@ -15,8 +16,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.core.games import Game
-from launcher.services import artwork
+from launcher.domain.models import (
+    Game,
+    SortOrder,
+    format_last_played,
+    format_playtime,
+)
+from launcher.services.artwork import GRID, ArtworkService
 from launcher.ui.theme import DARK
 
 _ICON_SIZE = QSize(28, 40)
@@ -42,10 +48,16 @@ class LibrarySidebar(QWidget):
     selection_changed = Signal(str)
     launch_requested = Signal(str)
     add_requested = Signal()
+    import_requested = Signal()
     filters_changed = Signal()
+    #: A SortOrder value.
+    sort_changed = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, artwork: ArtworkService, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
+        self._artwork = artwork
         self.setObjectName("sidebar")
         self._games: list[Game] = []
         self._running: set[str] = set()
@@ -64,10 +76,21 @@ class LibrarySidebar(QWidget):
         layout.addWidget(self._search)
 
         filter_row = QHBoxLayout()
+        filter_row.setSpacing(6)
         self._fav_filter = QCheckBox("Favorites only")
         self._fav_filter.toggled.connect(self.filters_changed)
         filter_row.addWidget(self._fav_filter)
         filter_row.addStretch()
+
+        self._sort_combo = QComboBox()
+        self._sort_combo.setObjectName("sortCombo")
+        for order in SortOrder:
+            self._sort_combo.addItem(order.label, order.value)
+        self._sort_combo.setToolTip("Sort the library")
+        self._sort_combo.currentIndexChanged.connect(
+            lambda _: self.sort_changed.emit(self._sort_combo.currentData())
+        )
+        filter_row.addWidget(self._sort_combo)
         layout.addLayout(filter_row)
 
         self._list = QListWidget()
@@ -79,15 +102,36 @@ class LibrarySidebar(QWidget):
         self._list.itemActivated.connect(self._on_activated)
         layout.addWidget(self._list, stretch=1)
 
+        button_row = QHBoxLayout()
+        button_row.setSpacing(6)
         self._add_btn = QPushButton("+ Add Game")
         self._add_btn.setFixedHeight(34)
         self._add_btn.clicked.connect(self.add_requested)
-        layout.addWidget(self._add_btn)
+        button_row.addWidget(self._add_btn)
+
+        self._import_btn = QPushButton("Import\u2026")
+        self._import_btn.setFixedHeight(34)
+        self._import_btn.setToolTip("Scan a folder for games")
+        self._import_btn.clicked.connect(self.import_requested)
+        button_row.addWidget(self._import_btn)
+        layout.addLayout(button_row)
+
+    def set_sort_order(self, value: str) -> None:
+        """Show the active sort without re-emitting the change."""
+        index = self._sort_combo.findData(value)
+        if index >= 0 and index != self._sort_combo.currentIndex():
+            self._sort_combo.blockSignals(True)
+            self._sort_combo.setCurrentIndex(index)
+            self._sort_combo.blockSignals(False)
 
     # -- state ---------------------------------------------------------
 
     def search_text(self) -> str:
         return self._search.text().strip()
+
+    def focus_search(self) -> None:
+        self._search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._search.selectAll()
 
     def favorites_only(self) -> bool:
         return self._fav_filter.isChecked()
@@ -103,7 +147,7 @@ class LibrarySidebar(QWidget):
             item = QListWidgetItem(game.name)
             item.setData(Qt.ItemDataRole.UserRole, game.name)
             item.setSizeHint(QSize(0, 46))
-            icon = artwork.pixmap(game.name, artwork.GRID.name, _ICON_SIZE, expand=True)
+            icon = self._artwork.pixmap(game.name, GRID.name, _ICON_SIZE, expand=True)
             if icon is not None:
                 item.setIcon(QIcon(icon))
             self._decorate(item, game)
@@ -120,16 +164,35 @@ class LibrarySidebar(QWidget):
     def _decorate(self, item: QListWidgetItem, game: Game) -> None:
         marks = []
         if game.is_favorite:
-            marks.append("★")
+            marks.append("\u2605")
         if game.name in self._running:
-            marks.append("●")
+            marks.append("\u25cf")
         suffix = ("   " + " ".join(marks)) if marks else ""
-        item.setText(f"{game.name}{suffix}")
+
+        detail = self._subtitle(game)
+        item.setText(f"{game.name}{suffix}\n{detail}" if detail else f"{game.name}{suffix}")
+
         if not game.executable_exists:
             item.setForeground(QColor(DARK.fg_muted))
             item.setToolTip(f"Executable not found:\n{game.executable}")
         else:
+            item.setForeground(QColor(DARK.fg))
             item.setToolTip(game.name)
+
+    @staticmethod
+    def _subtitle(game: Game) -> str:
+        """The second line of a row: playtime and when it was last played."""
+        if not game.executable_exists:
+            return "executable missing"
+        parts = [
+            p
+            for p in (
+                format_playtime(game.playtime_seconds),
+                format_last_played(game.last_played),
+            )
+            if p
+        ]
+        return "  \u00b7  ".join(parts)
 
     def set_running(self, game_name: str, running: bool) -> None:
         if running:

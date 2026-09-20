@@ -13,8 +13,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.core.games import Game
-from launcher.services import artwork
+from launcher.domain.models import Game
+from launcher.services.artwork import GRID, ArtworkService
 from launcher.ui.theme import restyle
 from launcher.ui.widgets.elide import ElidingLabel
 
@@ -32,9 +32,15 @@ class GameCard(QFrame):
     CARD_HEIGHT = 280
     HERO_HEIGHT = 160
 
-    def __init__(self, game: Game, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        game: Game,
+        artwork: ArtworkService,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.game = game
+        self._artwork = artwork
         self.setObjectName("gameCard")
         self.setFixedSize(self.CARD_WIDTH, self.CARD_HEIGHT)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -58,9 +64,9 @@ class GameCard(QFrame):
         self._hero_label.setFixedHeight(self.HERO_HEIGHT)
         self._hero_label.setObjectName("heroLabel")
 
-        art = artwork.pixmap(
+        art = self._artwork.pixmap(
             self.game.name,
-            artwork.GRID.name,
+            GRID.name,
             QSize(self.CARD_WIDTH, self.HERO_HEIGHT),
             expand=True,
         )
@@ -127,7 +133,7 @@ class GameCard(QFrame):
         self._play_button.setEnabled(not running)
 
     def update_favorite(self, is_fav: bool) -> None:
-        self.game.is_favorite = is_fav
+        self.game.stats.favorite = is_fav
         self._update_fav_icon()
 
     def _show_context_menu(self, pos) -> None:

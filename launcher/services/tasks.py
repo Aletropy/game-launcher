@@ -7,6 +7,7 @@ Qt supports it.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -71,10 +72,8 @@ class Task(QRunnable):
         A task can outlive the dialog that queued it; emitting into a
         deleted QObject raises RuntimeError from the worker thread.
         """
-        try:
+        with contextlib.suppress(RuntimeError):
             signal.emit(*args)
-        except RuntimeError:
-            pass
 
 
 class TaskGroup(QObject):

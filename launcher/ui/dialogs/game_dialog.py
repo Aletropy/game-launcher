@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -23,17 +24,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.core import prefixes
-from launcher.core.games import Game
-from launcher.core.paths import BASE_DIR, PREFIXES_DIR
+from launcher.data.paths import Paths
+from launcher.domain import prefixes
+from launcher.domain.models import Game, GameConfig
 from launcher.ui.dialogs.confirm import warn
 
 
 class AddGameDialog(QDialog):
     """Form dialog to add or edit a game's .conf configuration."""
 
-    def __init__(self, game: Game | None = None, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        paths: Paths,
+        game: Game | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._paths = paths
         self.game = game
         self.is_edit = game is not None
         self.setWindowTitle("Edit Game" if self.is_edit else "Add Game")
@@ -216,22 +223,22 @@ class AddGameDialog(QDialog):
             return
         g = self.game
         self._name_edit.setText(g.name)
-        self._exe_edit.setText(g.executable)
-        self._appid_edit.setText(g.game_id)
-        self._args_edit.setText(" ".join(g.game_args))
-        self._proton_edit.setText(g.custom_proton_path)
-        self._dlls_edit.setText(";".join(g.additional_dlls))
-        self._gs_check.setChecked(g.use_gamescope)
-        self._gsw_edit.setText(g.gamescope_w)
-        self._gsh_edit.setText(g.gamescope_h)
-        self._gswout_edit.setText(g.gamescope_w_out)
-        self._gshout_edit.setText(g.gamescope_h_out)
-        self._gsargs_edit.setText(g.gamescope_args)
-        self._override_id_edit.setText(g.override_app_id)
-        self._extra_vars_edit.setText(";".join(g.extra_vars))
-        if g.prefix:
+        self._exe_edit.setText(g.config.executable)
+        self._appid_edit.setText(g.config.game_id)
+        self._args_edit.setText(" ".join(g.config.game_args))
+        self._proton_edit.setText(g.config.custom_proton_path)
+        self._dlls_edit.setText(";".join(g.config.additional_dlls))
+        self._gs_check.setChecked(g.config.use_gamescope)
+        self._gsw_edit.setText(g.config.gamescope_w)
+        self._gsh_edit.setText(g.config.gamescope_h)
+        self._gswout_edit.setText(g.config.gamescope_w_out)
+        self._gshout_edit.setText(g.config.gamescope_h_out)
+        self._gsargs_edit.setText(g.config.gamescope_args)
+        self._override_id_edit.setText(g.config.override_app_id)
+        self._extra_vars_edit.setText(";".join(g.config.extra_vars))
+        if g.config.prefix:
             self._prefix_custom.setChecked(True)
-            self._prefix_edit.setText(g.prefix)
+            self._prefix_edit.setText(g.config.prefix)
         else:
             self._prefix_shared.setChecked(True)
         self._update_prefix_state()
@@ -240,7 +247,12 @@ class AddGameDialog(QDialog):
         self._gs_widget.setVisible(checked)
 
     def _browse_exe(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select Game Executable", "", "Executables (*.exe);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Game Executable",
+            self._paths.base.as_posix(),
+            "Executables (*.exe);;All Files (*)",
+        )
         if path:
             self._exe_edit.setText(path)
 
@@ -256,22 +268,24 @@ class AddGameDialog(QDialog):
 
     def _update_prefix_status(self) -> None:
         raw = self._prefix_edit.text().strip() if self._prefix_custom.isChecked() else ""
-        info = prefixes.inspect(raw)
+        info = prefixes.inspect(raw, self._paths)
         self._prefix_status.setText(info.message)
 
     def _browse_prefix(self) -> None:
         start = self._prefix_edit.text().strip()
-        base = str(prefixes.resolve(start).parent if start else PREFIXES_DIR)
+        base = str(
+            prefixes.resolve(start, self._paths).parent
+            if start
+            else self._paths.prefixes_dir
+        )
         path = QFileDialog.getExistingDirectory(self, "Select Prefix Folder", base)
         if not path:
             return
         chosen = Path(path)
-        try:
-            # Keep it relative when it lives under the launcher, so the
-            # config stays portable.
-            chosen = chosen.relative_to(BASE_DIR)
-        except ValueError:
-            pass
+        # Keep it relative when it lives under the launcher, so the
+        # config stays portable.
+        with contextlib.suppress(ValueError):
+            chosen = chosen.relative_to(self._paths.base)
         self._prefix_edit.setText(str(chosen))
 
     def _browse_proton(self) -> None:
@@ -290,17 +304,15 @@ class AddGameDialog(QDialog):
             warn(self, "Validation Error", "Executable path is required.")
             return
         if not self.is_edit:
-            # Check for duplicate name
-            from pathlib import Path
-            conf = Path(__file__).resolve().parent.parent.parent / "games" / f"{name}.conf"
+            conf = self._paths.games_dir / f"{name}.conf"
             if conf.is_file():
                 warn(self, "Validation Error", f"A game named '{name}' already exists.")
                 return
 
         self.accept()
 
-    def get_game(self) -> Game:
-        """Build and return a Game from the form fields."""
+    def get_config(self) -> GameConfig:
+        """Build a GameConfig from the form fields."""
         name = self._name_edit.text().strip()
         args_text = self._args_edit.text().strip()
         game_args = args_text.split() if args_text else []
@@ -334,8 +346,9 @@ class AddGameDialog(QDialog):
         }
 
         if self.is_edit and self.game is not None:
-            # replace() rather than a fresh Game: the form does not expose
-            # every field, and rebuilding silently dropped the ones it
-            # does not show (winedebug, vkd3d_config and friends).
-            return replace(self.game, **edited)
-        return Game(conf_path=Path(""), **edited)
+            # replace() on the existing config rather than a fresh one:
+            # the form does not expose every field, and rebuilding
+            # silently dropped the ones it does not show (winedebug,
+            # vkd3d_config and friends).
+            return replace(self.game.config, **edited)
+        return GameConfig(**edited)

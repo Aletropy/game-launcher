@@ -1,0 +1,46 @@
+[project]
+name = "game-launcher"
+version = "2.0.0"
+description = "A launcher for running Windows games through Proton"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.6.0"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF", "PL", "S", "BLE", "DTZ"]
+ignore = [
+    # Playtime and last-played are local wall-clock times shown to one
+    # user on one machine; timezone-aware datetimes would add noise
+    # without changing behaviour.
+    "DTZ005",
+    "DTZ901",
+    # Qt's API is camelCase and overriding it is not optional.
+    "N802",
+    "N803",
+    "N806",
+    "PLR0913",
+    "PLR2004",
+    # Asserts document internal invariants; this is not a security boundary.
+    "S101",
+    # URLs come from the SteamGridDB API, not from user input.
+    "S310",
+    # Some imports are deliberately local to break an import cycle or to
+    # keep Qt out of a module's import time.
+    "PLC0415",
+    # Qt UI construction is inherently a long sequence of widget setup;
+    # splitting it into helpers is already done where it reads better.
+    "PLR0915",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The test runner deliberately catches everything and asserts freely.
+"tests/*" = ["S101", "BLE001", "PLR2004", "S603", "S607", "PLW0603", "RUF015", "DTZ001"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true

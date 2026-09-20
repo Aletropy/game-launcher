@@ -13,7 +13,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from launcher.services import artwork
+from launcher.services.artwork import GRID, HERO, ArtworkService
 from launcher.ui.theme import DARK
 
 
@@ -24,8 +24,14 @@ class HeroBanner(QWidget):
     cropped to fill and carry a gradient scrim behind the title.
     """
 
-    def __init__(self, parent: QWidget | None = None, height: int = 220) -> None:
+    def __init__(
+        self,
+        artwork: ArtworkService,
+        parent: QWidget | None = None,
+        height: int = 220,
+    ) -> None:
         super().__init__(parent)
+        self._artwork = artwork
         self._key: str | None = None
         self._title = ""
         self._pixmap: QPixmap | None = None
@@ -43,8 +49,8 @@ class HeroBanner(QWidget):
         if self._key is None:
             return None
         size = QSize(max(self.width(), 1), max(self.height(), 1))
-        for art in (artwork.HERO.name, artwork.GRID.name):
-            found = artwork.pixmap(self._key, art, size, expand=True)
+        for art in (HERO.name, GRID.name):
+            found = self._artwork.pixmap(self._key, art, size, expand=True)
             if found is not None:
                 return found
         return None
