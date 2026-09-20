@@ -1,0 +1,17 @@
+# Wine prefix and backups (many GB, machine-specific)
+/Prefix/
+/backups/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+
+# Downloaded artwork
+/launcher/heroes/
+
+# Bundled third-party binaries
+/winetricks
+/cabextract

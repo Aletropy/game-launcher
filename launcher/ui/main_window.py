@@ -1,0 +1,274 @@
+"""Main application window with Library and Debug tabs."""
+
+from __future__ import annotations
+
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QHBoxLayout,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from launcher.game_manager import (
+    Game,
+    add_game,
+    remove_game,
+    scan_games,
+    toggle_favorite,
+    update_game,
+)
+from launcher.process_manager import ProcessManager
+from launcher.settings import get_sgdb_api_key, get_skip_missing_check, set_skip_missing_check
+from launcher.ui.add_game_dialog import AddGameDialog
+from launcher.ui.debug_tab import DebugTab
+from launcher.ui.game_grid import GameGrid
+from launcher.ui.sgdb_dialog import SGDBDialog
+
+
+class MainWindow(QMainWindow):
+    """The main application window."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Game Launcher")
+        self.setMinimumSize(1024, 700)
+        self.resize(1280, 800)
+
+        self._games: list[Game] = []
+        self._process_mgr = ProcessManager(self)
+        self._process_mgr.game_started.connect(self._on_game_started)
+        self._process_mgr.game_finished.connect(self._on_game_finished)
+        self._process_mgr.game_output.connect(self._on_game_output)
+        self._process_mgr.game_error.connect(self._on_game_output)
+
+        self._fetch_artwork_all: bool | None = None
+        self._remove_all: bool | None = None
+
+        self._setup_ui()
+        self._load_games()
+
+    def _setup_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self._tabs = QTabWidget()
+        root_layout.addWidget(self._tabs)
+
+        # Library tab
+        self._library_tab = self._build_library_tab()
+        self._tabs.addTab(self._library_tab, "Library")
+
+        # Debug tab
+        self._debug_tab = DebugTab()
+        self._debug_tab.stop_requested.connect(self._on_stop_game)
+        self._tabs.addTab(self._debug_tab, "Debug")
+
+    def _build_library_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Top bar
+        top_bar = QFrame()
+        top_bar.setStyleSheet("background-color: #161b22; border-bottom: 1px solid #30363d;")
+        top_bar.setFixedHeight(60)
+        top_layout = QHBoxLayout(top_bar)
+        top_layout.setContentsMargins(24, 10, 24, 10)
+
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText("Search games...")
+        self._search_edit.setFixedWidth(280)
+        self._search_edit.textChanged.connect(self._apply_filter)
+        top_layout.addWidget(self._search_edit)
+
+        top_layout.addStretch()
+
+        self._fav_filter = QCheckBox("Favorites only")
+        self._fav_filter.toggled.connect(self._apply_filter)
+        top_layout.addWidget(self._fav_filter)
+
+        add_btn = QPushButton("+ Add Game")
+        add_btn.setFixedHeight(34)
+        add_btn.clicked.connect(self._add_game)
+        top_layout.addWidget(add_btn)
+
+        layout.addWidget(top_bar)
+
+        # Game grid
+        self._game_grid = GameGrid()
+        self._game_grid.play_requested.connect(self._launch_game)
+        self._game_grid.favorite_requested.connect(self._toggle_favorite)
+        self._game_grid.edit_requested.connect(self._edit_game)
+        self._game_grid.remove_requested.connect(self._remove_game)
+        self._game_grid.fetch_artwork_requested.connect(self._fetch_artwork)
+        layout.addWidget(self._game_grid)
+
+        return tab
+
+    def _load_games(self) -> None:
+        self._games = scan_games()
+        missing = [g for g in self._games if not g.executable_exists]
+        if missing:
+            if get_skip_missing_check():
+                for g in missing:
+                    remove_game(g.name)
+            else:
+                self._handle_missing_executables(missing)
+            self._games = [g for g in self._games if g.executable_exists]
+
+        self._game_grid.set_games(self._games)
+        self._apply_filter()
+
+    def _handle_missing_executables(self, missing: list[Game]) -> None:
+        remove_all = False
+        for game in missing:
+            if remove_all:
+                remove_game(game.name)
+                continue
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Game Not Found")
+            msg.setText(
+                f"Game executable not found:\n{game.executable}\n({game.name})\n\nRemove this configuration?"
+            )
+            msg.setIcon(QMessageBox.Icon.Warning)
+            yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
+            no_btn = msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
+            yes_all_btn = msg.addButton("Yes to All", QMessageBox.ButtonRole.AcceptRole)
+            skip_btn = msg.addButton("Don't Ask Again", QMessageBox.ButtonRole.RejectRole)
+            msg.setDefaultButton(no_btn)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == yes_btn:
+                remove_game(game.name)
+            elif clicked == yes_all_btn:
+                remove_all = True
+                remove_game(game.name)
+            elif clicked == skip_btn:
+                set_skip_missing_check(True)
+                for g in missing:
+                    remove_game(g.name)
+                return
+
+    def _apply_filter(self) -> None:
+        text = self._search_edit.text()
+        favs_only = self._fav_filter.isChecked()
+        fav_names = {g.name for g in self._games if g.is_favorite}
+        self._game_grid.filter_cards(text, favs_only, fav_names)
+
+    def _launch_game(self, game_name: str) -> None:
+        self._process_mgr.launch(game_name)
+        self._game_grid.set_running(game_name, True)
+        self._debug_tab.add_game(game_name)
+        # Switch to debug tab to show output
+        self._tabs.setCurrentWidget(self._debug_tab)
+
+    def _toggle_favorite(self, game_name: str) -> None:
+        new_state = toggle_favorite(game_name)
+        self._game_grid.set_favorite(game_name, new_state)
+        # Update local game data
+        for g in self._games:
+            if g.name == game_name:
+                g.is_favorite = new_state
+                break
+        self._apply_filter()
+
+    def _add_game(self) -> None:
+        dialog = AddGameDialog(parent=self)
+        if dialog.exec():
+            game = dialog.get_game()
+            add_game(game)
+            self._load_games()
+            if get_sgdb_api_key():
+                if self._fetch_artwork_all is True:
+                    self._fetch_artwork(game.name)
+                elif self._fetch_artwork_all is None:
+                    msg = QMessageBox(self)
+                    msg.setWindowTitle("Fetch Artwork?")
+                    msg.setText(f"Fetch hero/grid artwork from SteamGridDB for '{game.name}'?")
+                    msg.setIcon(QMessageBox.Icon.Question)
+                    yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
+                    no_btn = msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
+                    msg.addButton("Yes to All", QMessageBox.ButtonRole.AcceptRole)
+                    msg.addButton("No to All", QMessageBox.ButtonRole.RejectRole)
+                    msg.setDefaultButton(yes_btn)
+                    msg.exec()
+                    clicked = msg.clickedButton()
+                    if clicked == yes_btn:
+                        self._fetch_artwork(game.name)
+                    elif clicked != no_btn:
+                        if clicked.text() == "Yes to All":
+                            self._fetch_artwork_all = True
+                            self._fetch_artwork(game.name)
+                        else:
+                            self._fetch_artwork_all = False
+
+    def _edit_game(self, game_name: str) -> None:
+        game = next((g for g in self._games if g.name == game_name), None)
+        if game is None:
+            return
+        dialog = AddGameDialog(game=game, parent=self)
+        if dialog.exec():
+            updated = dialog.get_game()
+            updated.conf_path = game.conf_path
+            update_game(updated)
+            self._load_games()
+
+    def _remove_game(self, game_name: str) -> None:
+        if self._remove_all is True:
+            remove_game(game_name)
+            self._load_games()
+            return
+        if self._remove_all is False:
+            return
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Remove Game")
+        msg.setText(f"Remove '{game_name}' from the launcher?")
+        msg.setIcon(QMessageBox.Icon.Question)
+        yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
+        no_btn = msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
+        msg.addButton("Yes to All", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("No to All", QMessageBox.ButtonRole.RejectRole)
+        msg.setDefaultButton(no_btn)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == yes_btn:
+            remove_game(game_name)
+            self._load_games()
+        elif clicked != no_btn:
+            if clicked.text() == "Yes to All":
+                self._remove_all = True
+                remove_game(game_name)
+                self._load_games()
+            else:
+                self._remove_all = False
+
+    def _fetch_artwork(self, game_name: str) -> None:
+        game = next((g for g in self._games if g.name == game_name), None)
+        steam_id = game.game_id if game else ""
+        dlg = SGDBDialog(game_name=game_name, steam_app_id=steam_id, parent=self)
+        dlg.artwork_downloaded.connect(lambda _: self._load_games())
+        dlg.exec()
+
+    def _on_game_started(self, game_name: str) -> None:
+        self._game_grid.set_running(game_name, True)
+        self._debug_tab.add_game(game_name)
+
+    def _on_game_finished(self, game_name: str, exit_code: int) -> None:
+        self._game_grid.set_running(game_name, False)
+        self._debug_tab.remove_game(game_name)
+
+    def _on_game_output(self, game_name: str, text: str) -> None:
+        self._debug_tab.append_output(game_name, text)
+
+    def _on_stop_game(self, game_name: str) -> None:
+        self._process_mgr.stop(game_name)
