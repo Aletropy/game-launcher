@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -33,6 +32,7 @@ from launcher.services.sgdb import (
     get_heroes,
     search_games,
 )
+from launcher.ui.dialogs.confirm import warn
 
 _THUMB_SIZE = (200, 120)
 _GRID_SPACING = 8
@@ -188,7 +188,7 @@ class SGDBDialog(QDialog):
     def _search(self) -> None:
         key = self._key_edit.text().strip()
         if not key:
-            QMessageBox.warning(self, "Missing API Key", "Please enter your SteamGridDB API key.")
+            warn(self, "Missing API Key", "Please enter your SteamGridDB API key.")
             return
         query = self._search_edit.text().strip()
         if not query:
@@ -293,7 +293,7 @@ class SGDBDialog(QDialog):
             return
         game_name = self.game_name or self._search_edit.text().strip()
         if not game_name:
-            QMessageBox.warning(self, "Missing Name", "No game name available.")
+            warn(self, "Missing Name", "No game name available.")
             return
         ext = ".png"
         for e in (".jpg", ".jpeg", ".webp", ".gif"):

@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -22,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from launcher.core.games import Game
+from launcher.ui.dialogs.confirm import warn
 
 
 class AddGameDialog(QDialog):
@@ -214,17 +214,17 @@ class AddGameDialog(QDialog):
         exe = self._exe_edit.text().strip()
 
         if not name:
-            QMessageBox.warning(self, "Validation Error", "Game name is required.")
+            warn(self, "Validation Error", "Game name is required.")
             return
         if not exe:
-            QMessageBox.warning(self, "Validation Error", "Executable path is required.")
+            warn(self, "Validation Error", "Executable path is required.")
             return
         if not self.is_edit:
             # Check for duplicate name
             from pathlib import Path
             conf = Path(__file__).resolve().parent.parent.parent / "games" / f"{name}.conf"
             if conf.is_file():
-                QMessageBox.warning(self, "Validation Error", f"A game named '{name}' already exists.")
+                warn(self, "Validation Error", f"A game named '{name}' already exists.")
                 return
 
         self.accept()

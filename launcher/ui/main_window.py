@@ -23,13 +23,10 @@ from launcher.core.games import (
     toggle_favorite,
     update_game,
 )
-from launcher.core.settings import (
-    get_sgdb_api_key,
-    get_skip_missing_check,
-    set_skip_missing_check,
-)
+from launcher.core.settings import get_flag, get_sgdb_api_key
 from launcher.services.process import ProcessManager
 from launcher.ui.debug_tab import DebugTab
+from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask
 from launcher.ui.dialogs.game_dialog import AddGameDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 from launcher.ui.widgets.game_grid import GameGrid
@@ -51,8 +48,8 @@ class MainWindow(QMainWindow):
         self._process_mgr.game_output.connect(self._on_game_output)
         self._process_mgr.game_error.connect(self._on_game_output)
 
-        self._fetch_artwork_all: bool | None = None
-        self._remove_all: bool | None = None
+        self._artwork_sticky = StickyChoice()
+        self._remove_sticky = StickyChoice()
 
         self._setup_ui()
         self._load_games()
@@ -122,7 +119,7 @@ class MainWindow(QMainWindow):
     def _load_games(self) -> None:
         self._games = scan_games()
         missing = [g for g in self._games if not g.executable_exists]
-        if missing and not get_skip_missing_check():
+        if missing and not get_flag("skip_missing_check"):
             removed = self._handle_missing_executables(missing)
             if removed:
                 self._games = [g for g in self._games if g.name not in removed]
@@ -138,36 +135,24 @@ class MainWindow(QMainWindow):
         so that a game on an unplugged drive is not silently lost.
         """
         removed: set[str] = set()
-        remove_all = False
+        sticky = StickyChoice()
         for game in missing:
-            if remove_all:
-                if remove_game(game.name):
-                    removed.add(game.name)
-                continue
-            msg = QMessageBox(self)
-            msg.setWindowTitle("Game Not Found")
-            msg.setText(
-                f"Game executable not found:\n{game.executable}\n({game.name})\n\nRemove this configuration?"
+            answer = ask(
+                self,
+                "Game Not Found",
+                f"Game executable not found:\n{game.executable}\n({game.name})\n\n"
+                "Remove this configuration?",
+                buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.DONT_ASK),
+                default=Answer.NO,
+                icon=QMessageBox.Icon.Warning,
+                sticky=sticky,
+                persist_key="skip_missing_check",
             )
-            msg.setIcon(QMessageBox.Icon.Warning)
-            yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
-            no_btn = msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
-            yes_all_btn = msg.addButton("Yes to All", QMessageBox.ButtonRole.AcceptRole)
-            skip_btn = msg.addButton("Don't Ask Again", QMessageBox.ButtonRole.RejectRole)
-            msg.setDefaultButton(no_btn)
-            msg.exec()
-            clicked = msg.clickedButton()
-            if clicked == yes_btn:
-                if remove_game(game.name):
-                    removed.add(game.name)
-            elif clicked == yes_all_btn:
-                remove_all = True
-                if remove_game(game.name):
-                    removed.add(game.name)
-            elif clicked == skip_btn:
-                # "Don't ask again" silences the prompt; it does not delete.
-                set_skip_missing_check(True)
+            if answer is Answer.DONT_ASK:
+                # Silences the prompt; it does not delete anything.
                 break
+            if answer in (Answer.YES, Answer.YES_ALL) and remove_game(game.name):
+                removed.add(game.name)
         return removed
 
     def _apply_filter(self) -> None:
@@ -199,28 +184,16 @@ class MainWindow(QMainWindow):
             add_game(game)
             self._load_games()
             if get_sgdb_api_key():
-                if self._fetch_artwork_all is True:
+                answer = ask(
+                    self,
+                    "Fetch Artwork?",
+                    f"Fetch hero/grid artwork from SteamGridDB for '{game.name}'?",
+                    buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.NO_ALL),
+                    default=Answer.YES,
+                    sticky=self._artwork_sticky,
+                )
+                if answer in (Answer.YES, Answer.YES_ALL):
                     self._fetch_artwork(game.name)
-                elif self._fetch_artwork_all is None:
-                    msg = QMessageBox(self)
-                    msg.setWindowTitle("Fetch Artwork?")
-                    msg.setText(f"Fetch hero/grid artwork from SteamGridDB for '{game.name}'?")
-                    msg.setIcon(QMessageBox.Icon.Question)
-                    yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
-                    no_btn = msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
-                    msg.addButton("Yes to All", QMessageBox.ButtonRole.AcceptRole)
-                    msg.addButton("No to All", QMessageBox.ButtonRole.RejectRole)
-                    msg.setDefaultButton(yes_btn)
-                    msg.exec()
-                    clicked = msg.clickedButton()
-                    if clicked == yes_btn:
-                        self._fetch_artwork(game.name)
-                    elif clicked is not None and clicked != no_btn:
-                        if clicked.text() == "Yes to All":
-                            self._fetch_artwork_all = True
-                            self._fetch_artwork(game.name)
-                        else:
-                            self._fetch_artwork_all = False
 
     def _edit_game(self, game_name: str) -> None:
         game = next((g for g in self._games if g.name == game_name), None)
@@ -234,33 +207,17 @@ class MainWindow(QMainWindow):
             self._load_games()
 
     def _remove_game(self, game_name: str) -> None:
-        if self._remove_all is True:
+        answer = ask(
+            self,
+            "Remove Game",
+            f"Remove '{game_name}' from the launcher?",
+            buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.NO_ALL),
+            default=Answer.NO,
+            sticky=self._remove_sticky,
+        )
+        if answer in (Answer.YES, Answer.YES_ALL):
             remove_game(game_name)
             self._load_games()
-            return
-        if self._remove_all is False:
-            return
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Remove Game")
-        msg.setText(f"Remove '{game_name}' from the launcher?")
-        msg.setIcon(QMessageBox.Icon.Question)
-        yes_btn = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
-        no_btn = msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
-        msg.addButton("Yes to All", QMessageBox.ButtonRole.AcceptRole)
-        msg.addButton("No to All", QMessageBox.ButtonRole.RejectRole)
-        msg.setDefaultButton(no_btn)
-        msg.exec()
-        clicked = msg.clickedButton()
-        if clicked == yes_btn:
-            remove_game(game_name)
-            self._load_games()
-        elif clicked is not None and clicked != no_btn:
-            if clicked.text() == "Yes to All":
-                self._remove_all = True
-                remove_game(game_name)
-                self._load_games()
-            else:
-                self._remove_all = False
 
     def _fetch_artwork(self, game_name: str) -> None:
         game = next((g for g in self._games if g.name == game_name), None)

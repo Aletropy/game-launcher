@@ -45,3 +45,15 @@ def set_skip_missing_check(value: bool) -> None:
     settings = load_settings()
     settings["skip_missing_check"] = value
     save_settings(settings)
+
+
+def get_flag(name: str, default: bool = False) -> bool:
+    """Return a boolean preference."""
+    return bool(load_settings().get(name, default))
+
+
+def set_flag(name: str, value: bool) -> None:
+    """Persist a boolean preference."""
+    settings = load_settings()
+    settings[name] = value
+    save_settings(settings)
