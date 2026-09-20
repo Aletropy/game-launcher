@@ -47,6 +47,7 @@ class _ImageTile(QFrame):
         super().__init__(parent)
         self.url = url
         self.setObjectName("gameCard")
+        self.setObjectName("thumbTile")
         self.setFixedSize(_THUMB_SIZE[0] + 8, _THUMB_SIZE[1] + 8)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
@@ -56,7 +57,6 @@ class _ImageTile(QFrame):
         self._label = QLabel()
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setFixedSize(_THUMB_SIZE[0], _THUMB_SIZE[1])
-        self._label.setStyleSheet("background-color: #21262d; border-radius: 6px;")
         layout.addWidget(self._label)
 
     def set_pixmap(self, pixmap: QPixmap) -> None:
@@ -116,7 +116,7 @@ class SGDBDialog(QDialog):
                 "Get one at: https://www.steamgriddb.com/profile/preferences"
             )
             info.setWordWrap(True)
-            info.setStyleSheet("color: #8b949e; font-size: 12px;")
+            info.setObjectName("hintLabel")
             layout.addWidget(info)
 
         key_row = QHBoxLayout()
@@ -149,7 +149,7 @@ class SGDBDialog(QDialog):
         layout.addLayout(search_row)
 
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("color: #8b949e; font-size: 12px;")
+        self._status_label.setObjectName("hintLabel")
         layout.addWidget(self._status_label)
 
         self._results_scroll = QScrollArea()

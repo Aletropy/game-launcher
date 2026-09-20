@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from launcher.core.games import Game
+from launcher.ui.theme import restyle
 
 
 class GameCard(QFrame):
@@ -54,7 +55,7 @@ class GameCard(QFrame):
         self._hero_label = QLabel()
         self._hero_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._hero_label.setFixedHeight(self.HERO_HEIGHT)
-        self._hero_label.setStyleSheet("background-color: #21262d; border-top-left-radius: 10px; border-top-right-radius: 10px;")
+        self._hero_label.setObjectName("heroLabel")
 
         hero_path = self.game.hero_path
         if hero_path and hero_path.is_file():
@@ -117,17 +118,12 @@ class GameCard(QFrame):
         initials = "".join(w[0] for w in self.game.name.split()[:2]).upper()
         self._hero_label.setText(initials)
         self._hero_label.setObjectName("placeholderLabel")
-        self._hero_label.setStyleSheet(
-            "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-            "stop:0 #1a1e2e, stop:1 #0f1923); "
-            "border-top-left-radius: 10px; border-top-right-radius: 10px;"
-        )
+        restyle(self._hero_label)
 
     def _update_fav_icon(self) -> None:
         self._fav_button.setText("\u2605" if self.game.is_favorite else "\u2606")
-        self._fav_button.setStyleSheet(
-            f"color: {'#f0c040' if self.game.is_favorite else '#8b949e'}; background: transparent; border: none; font-size: 18px;"
-        )
+        self._fav_button.setProperty("favorite", "true" if self.game.is_favorite else "false")
+        restyle(self._fav_button)
 
     def set_running(self, running: bool) -> None:
         self._status_label.setVisible(running)

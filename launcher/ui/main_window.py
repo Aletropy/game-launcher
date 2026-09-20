@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
 
         # Top bar
         top_bar = QFrame()
-        top_bar.setStyleSheet("background-color: #161b22; border-bottom: 1px solid #30363d;")
+        top_bar.setObjectName("topBar")
         top_bar.setFixedHeight(60)
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(24, 10, 24, 10)

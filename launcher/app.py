@@ -9,12 +9,12 @@ from PySide6.QtWidgets import QApplication
 
 from launcher.core.paths import ICON_PATH
 from launcher.ui.main_window import MainWindow
-from launcher.ui.styles import DARK_STYLE
+from launcher.ui.theme import apply_theme
 
 
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setStyleSheet(DARK_STYLE)
+    apply_theme(app)
 
     if ICON_PATH.is_file():
         app.setWindowIcon(QIcon(str(ICON_PATH)))

@@ -35,7 +35,7 @@ class DebugTab(QWidget):
         header.setContentsMargins(16, 12, 16, 8)
 
         title = QLabel("Debug Output")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; color: #e6edf3;")
+        title.setObjectName("sectionTitle")
         header.addWidget(title)
         header.addStretch()
 
