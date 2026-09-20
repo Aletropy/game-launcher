@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
@@ -23,5 +24,8 @@ def main() -> None:
     if ICON_PATH.is_file():
         window.setWindowIcon(QIcon(str(ICON_PATH)))
     window.show()
+
+    # Once the window is up, so the prompt has something behind it.
+    QTimer.singleShot(0, window.offer_artwork_cleanup)
 
     sys.exit(app.exec())

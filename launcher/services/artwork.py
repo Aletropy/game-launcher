@@ -15,7 +15,7 @@ import hashlib
 import re
 import unicodedata
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
@@ -273,3 +273,249 @@ def pixmap(key: str, art: str, size: QSize, *, expand: bool = False) -> QPixmap 
     while len(_cache) > _CACHE_LIMIT:
         _cache.popitem(last=False)
     return scaled
+
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ArtFile:
+    """One artwork file found on disk."""
+
+    path: Path
+    key: str
+    art: str
+    size: int
+    legacy: bool = False
+    #: Bytes the file would occupy after re-encoding, once computed.
+    reencoded: bytes | None = None
+
+    @property
+    def savings(self) -> int:
+        if self.reencoded is None:
+            return 0
+        return max(0, self.size - len(self.reencoded))
+
+
+@dataclass
+class CleanupReport:
+    """What a scan found, and what each action would reclaim."""
+
+    files: list[ArtFile]
+    orphans: list[ArtFile]
+    duplicates: list[ArtFile]
+    shrinkable: list[ArtFile]
+    legacy: list[ArtFile]
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(f.size for f in self.files)
+
+    @property
+    def orphan_bytes(self) -> int:
+        return sum(f.size for f in self.orphans)
+
+    @property
+    def duplicate_bytes(self) -> int:
+        return sum(f.size for f in self.duplicates)
+
+    @property
+    def shrink_bytes(self) -> int:
+        return sum(f.savings for f in self.shrinkable)
+
+    def reclaimable(self, *, reencode: bool, dedupe: bool, orphans: bool) -> int:
+        """Bytes freed by the selected actions, without double counting."""
+        skip: set[int] = set()
+        total = 0
+        if orphans:
+            total += self.orphan_bytes
+            skip.update(id(f) for f in self.orphans)
+        if dedupe:
+            total += sum(f.size for f in self.duplicates if id(f) not in skip)
+            skip.update(id(f) for f in self.duplicates)
+        if reencode:
+            total += sum(f.savings for f in self.shrinkable if id(f) not in skip)
+        return total
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.orphans or self.duplicates or self.shrinkable or self.legacy)
+
+
+def _scan_dir(directory: Path, art: str, *, legacy: bool) -> list[ArtFile]:
+    if not directory.is_dir():
+        return []
+    found: list[ArtFile] = []
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in EXTENSIONS:
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        found.append(ArtFile(path=path, key=path.stem, art=art, size=size, legacy=legacy))
+    return found
+
+
+def scan(known_keys: set[str], *, measure: bool = True) -> CleanupReport:
+    """Inspect stored artwork against the set of games that still exist.
+
+    With ``measure``, each file is re-encoded into memory so the report
+    states exact savings rather than an estimate. Nothing is written.
+    """
+    files: list[ArtFile] = []
+    for art in SPECS:
+        files.extend(_scan_dir(art_dir(art), art, legacy=False))
+    files.extend(_scan_dir(LEGACY_HEROES_DIR, GRID.name, legacy=True))
+
+    known_slugs = {slug(k) for k in known_keys}
+
+    orphans: list[ArtFile] = []
+    live: list[ArtFile] = []
+    for f in files:
+        known = f.key in known_keys if f.legacy else f.key in known_slugs
+        (live if known else orphans).append(f)
+
+    # Among live files, the same game and art type may have several
+    # extensions; the newest wins and the rest are duplicates.
+    by_target: dict[tuple[str, str], list[ArtFile]] = {}
+    for f in live:
+        target = (slug(f.key) if f.legacy else f.key, f.art)
+        by_target.setdefault(target, []).append(f)
+
+    duplicates: list[ArtFile] = []
+    keepers: list[ArtFile] = []
+    for group in by_target.values():
+        if len(group) == 1:
+            keepers.append(group[0])
+            continue
+        group.sort(key=lambda f: f.path.stat().st_mtime, reverse=True)
+        keepers.append(group[0])
+        duplicates.extend(group[1:])
+
+    legacy = [f for f in keepers if f.legacy]
+
+    shrinkable: list[ArtFile] = []
+    if measure:
+        for f in keepers:
+            try:
+                data, _ = encode(_load(f.path), SPECS[f.art])
+            except OSError:
+                continue
+            if len(data) < f.size:
+                f.reencoded = data
+                shrinkable.append(f)
+
+    return CleanupReport(
+        files=files,
+        orphans=orphans,
+        duplicates=duplicates,
+        shrinkable=shrinkable,
+        legacy=legacy,
+    )
+
+
+@dataclass
+class CleanupResult:
+    """What a cleanup actually did."""
+
+    migrated: int = 0
+    reencoded: int = 0
+    deduped: int = 0
+    orphans_removed: int = 0
+    freed: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+def _write(path: Path, data: bytes) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+
+
+def apply_cleanup(
+    report: CleanupReport,
+    *,
+    reencode: bool = True,
+    dedupe: bool = True,
+    delete_orphans: bool = True,
+    migrate: bool = True,
+) -> CleanupResult:
+    """Carry out the selected parts of a scan. Only these are destructive.
+
+    With every flag off this does nothing at all, so a user who unticks
+    each action and confirms still keeps every file.
+    """
+    result = CleanupResult()
+
+    if delete_orphans:
+        for f in report.orphans:
+            try:
+                size = f.size
+                f.path.unlink()
+            except OSError as e:
+                result.errors.append(f"{f.path.name}: {e}")
+            else:
+                result.orphans_removed += 1
+                result.freed += size
+
+    if dedupe:
+        for f in report.duplicates:
+            try:
+                size = f.size
+                f.path.unlink()
+            except OSError as e:
+                result.errors.append(f"{f.path.name}: {e}")
+            else:
+                result.deduped += 1
+                result.freed += size
+
+    # Migration and re-encoding both rewrite a keeper, so they run together:
+    # a legacy file that also shrinks is written once, into its new home.
+    for f in report.files:
+        # Orphans and duplicates are either deleted above or deliberately
+        # left alone; either way they are never rewritten in place.
+        if f in report.orphans or f in report.duplicates:
+            continue
+
+        moving = migrate and f.legacy
+        shrinking = reencode and f.reencoded is not None
+        if not (moving or shrinking):
+            continue
+
+        data = f.reencoded if shrinking else None
+        if moving:
+            if data is None:
+                try:
+                    data, ext = encode(_load(f.path), SPECS[f.art])
+                except OSError as e:
+                    result.errors.append(f"{f.path.name}: {e}")
+                    continue
+            else:
+                ext = f".{SPECS[f.art].fmt}"
+            directory = art_dir(f.art)
+            directory.mkdir(parents=True, exist_ok=True)
+            dest = directory / f"{slug(f.key)}{ext}"
+        else:
+            dest = f.path
+
+        assert data is not None
+        try:
+            before = f.size
+            _write(dest, data)
+            if moving and f.path != dest:
+                f.path.unlink(missing_ok=True)
+        except OSError as e:
+            result.errors.append(f"{f.path.name}: {e}")
+            continue
+
+        if moving:
+            result.migrated += 1
+        if shrinking:
+            result.reencoded += 1
+        result.freed += max(0, before - len(data))
+
+    invalidate()
+    return result

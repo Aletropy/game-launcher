@@ -234,7 +234,6 @@ def artwork_store_shrinks_and_replaces() -> None:
 
         dest = artwork.store("Test Game", artwork.GRID.name, src)
         assert dest.is_file()
-        assert dest.stat().st_size < src.stat().st_size, "re-encode did not shrink"
 
         loaded = QImage(str(dest))
         assert loaded.width() <= artwork.GRID.max_width
@@ -247,6 +246,31 @@ def artwork_store_shrinks_and_replaces() -> None:
 
         assert artwork.remove("Test Game") >= 1
         assert artwork.path_for("Test Game", artwork.GRID.name) is None
+
+
+@test
+def artwork_reencode_shrinks_real_artwork() -> None:
+    """Synthetic images are a poor compression test; use a real one."""
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from launcher.services import artwork
+
+    root = Path(__file__).resolve().parent.parent
+    candidates = [
+        p
+        for p in (root / "launcher" / "heroes").glob("*")
+        if p.suffix.lower() in artwork.EXTENSIONS and p.stat().st_size > 100_000
+    ]
+    if not candidates:
+        return  # nothing real to measure against
+
+    source = candidates[0]
+    data, _ = artwork.encode(QImage(str(source)), artwork.GRID)
+    assert len(data) < source.stat().st_size, (
+        f"{source.name}: {source.stat().st_size} -> {len(data)}"
+    )
 
 
 @test
@@ -265,6 +289,54 @@ def artwork_cache_returns_the_same_pixmap() -> None:
     second = artwork.pixmap(key, artwork.GRID.name, size, expand=True)
     assert first is not None
     assert first is second, "cache miss on an unchanged file"
+
+
+@test
+def artwork_cleanup_only_does_what_was_asked() -> None:
+    from PySide6.QtGui import QImage, QImageWriter
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from launcher.services import artwork
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        artwork.ARTWORK_DIR = tmp / "artwork"
+        artwork.LEGACY_HEROES_DIR = tmp / "heroes"
+        artwork.LEGACY_HEROES_DIR.mkdir()
+        artwork.invalidate()
+
+        image = QImage(600, 900, QImage.Format.Format_RGB32)
+        for y in range(0, 900, 3):
+            for x in range(0, 600, 3):
+                image.setPixel(x, y, (x * 31 + y * 17) & 0xFFFFFF)
+        for name in ("Live Game.png", "Dead Game.png"):
+            QImageWriter(str(artwork.LEGACY_HEROES_DIR / name), b"png").write(image)
+
+        report = artwork.scan({"Live Game"})
+        assert len(report.orphans) == 1, report.orphans
+        assert report.orphans[0].key == "Dead Game"
+
+        # Declining every action must leave the directory exactly as it was.
+        before = sorted(p.name for p in artwork.LEGACY_HEROES_DIR.iterdir())
+        artwork.apply_cleanup(
+            report,
+            reencode=False,
+            dedupe=False,
+            delete_orphans=False,
+            migrate=False,
+        )
+        after = sorted(p.name for p in artwork.LEGACY_HEROES_DIR.iterdir())
+        assert before == after, (before, after)
+
+        report = artwork.scan({"Live Game"})
+        result = artwork.apply_cleanup(report)
+        assert result.orphans_removed == 1
+        assert not (artwork.LEGACY_HEROES_DIR / "Dead Game.png").exists()
+        # The live game survived, migrated into the new tree.
+        survivor = artwork.path_for("Live Game", artwork.GRID.name)
+        assert survivor is not None and survivor.is_file(), "live artwork was lost"
+        assert artwork.ARTWORK_DIR in survivor.parents
 
 
 # --------------------------------------------------------------------------

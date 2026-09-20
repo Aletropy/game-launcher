@@ -23,9 +23,11 @@ from launcher.core.games import (
     toggle_favorite,
     update_game,
 )
-from launcher.core.settings import get_flag, get_sgdb_api_key
+from launcher.core.settings import get_flag, get_sgdb_api_key, set_flag
+from launcher.services import artwork
 from launcher.services.process import ProcessManager
 from launcher.ui.debug_tab import DebugTab
+from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
 from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask
 from launcher.ui.dialogs.game_dialog import AddGameDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
@@ -98,6 +100,11 @@ class MainWindow(QMainWindow):
         self._fav_filter.toggled.connect(self._apply_filter)
         top_layout.addWidget(self._fav_filter)
 
+        cleanup_btn = QPushButton("Clean Up Artwork…")
+        cleanup_btn.setFixedHeight(34)
+        cleanup_btn.clicked.connect(self._clean_up_artwork)
+        top_layout.addWidget(cleanup_btn)
+
         add_btn = QPushButton("+ Add Game")
         add_btn.setFixedHeight(34)
         add_btn.clicked.connect(self._add_game)
@@ -154,6 +161,42 @@ class MainWindow(QMainWindow):
             if answer in (Answer.YES, Answer.YES_ALL) and remove_game(game.name):
                 removed.add(game.name)
         return removed
+
+    def _clean_up_artwork(self, *, only_if_worthwhile: bool = False) -> None:
+        """Scan stored artwork and offer to tidy it up."""
+        report = artwork.scan({g.name for g in self._games})
+        if report.is_empty:
+            if not only_if_worthwhile:
+                QMessageBox.information(
+                    self,
+                    "Clean Up Artwork",
+                    f"Nothing to clean up. Artwork uses {human(report.total_bytes)}.",
+                )
+            return
+
+        dialog = ArtworkCleanupDialog(report, self)
+        if dialog.exec() and dialog.result_summary is not None:
+            summary = dialog.result_summary
+            if summary.errors:
+                QMessageBox.warning(
+                    self,
+                    "Clean Up Artwork",
+                    "Some files could not be cleaned up:\n"
+                    + "\n".join(summary.errors[:10]),
+                )
+            self._load_games()
+
+    def offer_artwork_cleanup(self) -> None:
+        """Offer the cleanup once, the first time it would help.
+
+        Called after the window is on screen, never from __init__: this
+        opens a modal dialog, and doing so during construction blocks
+        before the window is even visible.
+        """
+        if get_flag("artwork_cleanup_prompted"):
+            return
+        set_flag("artwork_cleanup_prompted", True)
+        self._clean_up_artwork(only_if_worthwhile=True)
 
     def _apply_filter(self) -> None:
         text = self._search_edit.text()
