@@ -225,12 +225,14 @@ EOF
 verify_install() {
     head_ "Verifying"
 
-    if QT_QPA_PLATFORM=offscreen "$VENV/bin/python" - <<'PY' 2>/dev/null
+    # Import from the launcher directory, not the caller's cwd: this
+    # script is also run from elsewhere by the one-run installer.
+    if QT_QPA_PLATFORM=offscreen "$VENV/bin/python" -c "
 import sys
-sys.path.insert(0, ".")
+sys.path.insert(0, '$LAUNCHER_DIR')
 from launcher.app.context import AppContext  # noqa: F401
 from launcher.app.main import build_window   # noqa: F401
-PY
+" 2>/dev/null
     then
         ok "the launcher imports cleanly"
     else

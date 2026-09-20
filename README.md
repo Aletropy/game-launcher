@@ -5,6 +5,35 @@ Steam Flatpak container.
 
 ## Install
 
+One file, run once:
+
+```bash
+./game-launcher-2.0.0.run             # install, or upgrade in place
+./game-launcher-2.0.0.run --target DIR
+./game-launcher-2.0.0.run --yes       # no questions
+./game-launcher-2.0.0.run --check     # dependencies only, changes nothing
+./game-launcher-2.0.0.run --extract DIR
+```
+
+It verifies its own payload, unpacks itself, finds an existing
+installation if there is one, and runs the setup. It picks the target in
+this order: `--target`, an installation in the current directory, the
+one the `game-launcher` command already points at, then
+`~/.local/share/game-launcher`.
+
+**Upgrading an existing project** keeps everything that is yours:
+`games/`, `Prefix/`, `prefixes/`, `backups/`, `launcher/artwork/`,
+`launcher/heroes/`, `.prefix-name` and the virtualenv. Only the
+application source and the helper scripts are replaced, the previous
+version is archived to `.upgrade-backup-<timestamp>.tar.gz` first, and
+modules that no longer exist upstream are removed so they cannot shadow
+the new layout. Settings and playtime live outside the project and are
+never touched.
+
+Without a terminal and without `--yes` it refuses rather than guessing.
+
+If you already have the source tree, `install.sh` does the same setup:
+
 ```bash
 ./install.sh              # check dependencies, create the venv, install
 ./install.sh --check      # report dependencies and exit, changing nothing
@@ -21,10 +50,17 @@ alone.
 ## Building a release
 
 ```bash
-./package.sh              # dist/game-launcher-<version>.tar.gz
+./package.sh              # dist/*.run and dist/*.tar.gz
 ./package.sh --no-check   # skip the test and lint gate
 ./package.sh --clean      # remove dist/
 ```
+
+It produces two artifacts: the one-run `.run` installer, and a plain
+`.tar.gz` for anyone who would rather unpack it themselves. The `.run`
+is the same archive appended to `installer/header.sh` after a
+`__PAYLOAD_BELOW__` marker, with the payload's SHA-256 baked into the
+header; the header seeks past itself to read it back and refuses a
+payload that does not match.
 
 The archive carries the source, the scripts, the icon and the docs, with
 an empty `games/` folder. It leaves out the virtualenv, Wine prefixes,

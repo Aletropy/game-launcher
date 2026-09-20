@@ -261,6 +261,95 @@ build_archive() {
     printf '%s\n' "$archive"
 }
 
+build_run_installer() {
+    local archive="$1" name="$2"
+    head_ "Building the one-run installer"
+
+    local header="$SOURCE_DIR/installer/header.sh"
+    if [ ! -f "$header" ]; then
+        err "missing installer/header.sh"
+        return 1
+    fi
+    if ! bash -n "$header" 2>/dev/null; then
+        err "installer/header.sh has a syntax error"
+        return 1
+    fi
+
+    local checksum
+    checksum="$(sha256sum "$archive" | cut -d' ' -f1)"
+
+    local installer="$DIST_DIR/$name.run"
+    rm -f "$installer"
+
+    # The header ends at the __PAYLOAD_BELOW__ marker; the compressed
+    # archive is appended raw after it, and the header seeks past itself
+    # with tail to read it back.
+    sed -e "s/@@VERSION@@/$VERSION/g" \
+        -e "s/@@PAYLOAD_SHA256@@/$checksum/g" \
+        "$header" > "$installer" || return 1
+    cat "$archive" >> "$installer" || return 1
+    chmod +x "$installer"
+
+    ok "header + payload combined"
+
+    # The marker must appear exactly once, or tail would seek wrongly.
+    local markers
+    markers="$(grep -ac '^__PAYLOAD_BELOW__$' "$installer" 2>/dev/null || echo 0)"
+    if [ "$markers" != "1" ]; then
+        err "expected one payload marker, found $markers"
+        return 1
+    fi
+    ok "payload marker is unambiguous"
+
+    printf '%s\n' "$installer"
+}
+
+test_run_installer() {
+    local installer="$1" name="$2"
+    head_ "Testing the one-run installer"
+
+    if [ "$("$installer" --version)" = "$VERSION" ]; then
+        ok "reports its version"
+    else
+        err "--version did not report $VERSION"
+        return 1
+    fi
+
+    local scratch
+    scratch="$(mktemp -d)" || return 1
+    trap 'rm -rf "$scratch"' RETURN
+
+    if "$installer" --extract "$scratch/unpacked" >/dev/null 2>&1; then
+        ok "unpacks its payload"
+    else
+        err "could not unpack the payload"
+        return 1
+    fi
+
+    if [ -x "$scratch/unpacked/game-launcher.sh" ]; then
+        ok "game-launcher.sh is executable inside the installer"
+    else
+        err "game-launcher.sh lost its executable bit"
+        return 1
+    fi
+    if ! cmp -s "$SOURCE_DIR/game-launcher.sh" "$scratch/unpacked/game-launcher.sh"; then
+        err "game-launcher.sh differs from the original"
+        return 1
+    fi
+    ok "game-launcher.sh byte-identical through the installer"
+
+    # A corrupt payload must be refused rather than half-installed.
+    local tampered="$scratch/tampered.run"
+    cp "$installer" "$tampered"
+    printf 'junk' >> "$tampered"
+    chmod +x "$tampered"
+    if "$tampered" --extract "$scratch/bad" >/dev/null 2>&1; then
+        err "a corrupt payload was accepted"
+        return 1
+    fi
+    ok "refuses a corrupt payload"
+}
+
 test_install() {
     local archive="$1" name="$2"
     head_ "Testing the archive"
@@ -359,14 +448,18 @@ stage "$STAGING" || exit 1
 verify_staging "$STAGING" || exit 1
 ARCHIVE="$(build_archive "$STAGING" "$NAME" | tail -n1)" || exit 1
 test_install "$ARCHIVE" "$NAME" || exit 1
+INSTALLER="$(build_run_installer "$ARCHIVE" "$NAME" | tail -n1)" || exit 1
+test_run_installer "$INSTALLER" "$NAME" || exit 1
 
-SIZE="$(du -h "$ARCHIVE" | cut -f1)"
 cat <<EOF
 
-${C_OK}Done.${C_OFF}  $ARCHIVE  ($SIZE)
+${C_OK}Done.${C_OFF}
 
-  To install elsewhere:
-      tar xzf $(basename "$ARCHIVE")
-      cd $NAME
-      ./install.sh
+  $INSTALLER  ($(du -h "$INSTALLER" | cut -f1))
+      one file; run it once to install or upgrade in place
+          ./$(basename "$INSTALLER")
+
+  $ARCHIVE  ($(du -h "$ARCHIVE" | cut -f1))
+      plain archive, if you would rather unpack it yourself
+          tar xzf $(basename "$ARCHIVE") && cd $NAME && ./install.sh
 EOF
