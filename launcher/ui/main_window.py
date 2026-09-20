@@ -19,6 +19,7 @@ from launcher.core.games import (
     Game,
     add_game,
     remove_game,
+    rename_game,
     scan_games,
     toggle_favorite,
     update_game,
@@ -28,7 +29,7 @@ from launcher.services import artwork
 from launcher.services.process import ProcessManager
 from launcher.ui.debug_tab import DebugTab
 from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
-from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask
+from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask, warn
 from launcher.ui.dialogs.game_dialog import AddGameDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 from launcher.ui.widgets.game_grid import GameGrid
@@ -243,11 +244,30 @@ class MainWindow(QMainWindow):
         if game is None:
             return
         dialog = AddGameDialog(game=game, parent=self)
-        if dialog.exec():
-            updated = dialog.get_game()
+        if not dialog.exec():
+            return
+
+        updated = dialog.get_game()
+        if updated.name != game.name:
+            # The conf stem is the game's identity, so a rename has to move
+            # the conf, the artwork and the favourite together.
+            try:
+                updated.conf_path = rename_game(game.name, updated.name)
+            except FileExistsError:
+                warn(
+                    self,
+                    "Rename Failed",
+                    f"A game named '{updated.name}' already exists.",
+                )
+                return
+            except OSError as e:
+                warn(self, "Rename Failed", str(e))
+                return
+        else:
             updated.conf_path = game.conf_path
-            update_game(updated)
-            self._load_games()
+
+        update_game(updated)
+        self._load_games()
 
     def _remove_game(self, game_name: str) -> None:
         answer = ask(

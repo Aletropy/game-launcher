@@ -259,6 +259,33 @@ QCheckBox::indicator:checked {
     border-color: $accent;
 }
 
+QCheckBox:disabled, QRadioButton:disabled {
+    color: $fg_disabled;
+}
+
+QRadioButton {
+    color: $fg;
+    spacing: 8px;
+}
+
+QRadioButton::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid $border;
+    /* Half the 16px border box, or Qt draws a rounded square. */
+    border-radius: 8px;
+    background-color: $surface;
+}
+
+QRadioButton::indicator:hover {
+    border-color: $border_hover;
+}
+
+QRadioButton::indicator:checked {
+    border: 1px solid $accent;
+    background-color: $accent;
+}
+
 QGroupBox {
     color: $fg;
     border: 1px solid $border;

@@ -28,6 +28,8 @@ class Game:
     gamescope_h_out: str = "1080"
     gamescope_args: str = "-f -e"
     override_app_id: str = ""
+    #: Per-game Wine prefix; empty means the shared prefix.
+    prefix: str = ""
     extra_vars: list[str] = field(default_factory=list)
     proton_use_wine_sync: str = ""
     winedebug: str = ""
@@ -93,6 +95,7 @@ def _game_from_conf(conf_path: Path, favs: set[str]) -> Game:
         gamescope_h_out=str(data.get("GAMESCOPE_H_OUT", "1080")),
         gamescope_args=str(data.get("GAMESCOPE_ARGS", "-f -e")),
         override_app_id=str(data.get("OVERRIDE_APP_ID", "")),
+        prefix=str(data.get("GAME_PREFIX", "")),
         extra_vars=_as_list(data.get("extra_vars")),
         proton_use_wine_sync=str(data.get("PROTON_USE_WINE_SYNC", "")),
         winedebug=str(data.get("WINEDEBUG", "")),
@@ -163,6 +166,10 @@ def _build_data(game: Game) -> dict[str, str | list[str]]:
         d["GAMESCOPE_ARGS"] = game.gamescope_args
     if game.override_app_id:
         d["OVERRIDE_APP_ID"] = game.override_app_id
+    # Only written when set, so confs for games on the shared prefix are
+    # left byte-identical.
+    if game.prefix:
+        d["GAME_PREFIX"] = game.prefix
     if game.extra_vars:
         d["extra_vars"] = game.extra_vars
     if game.proton_use_wine_sync:
@@ -176,6 +183,34 @@ def _build_data(game: Game) -> dict[str, str | list[str]]:
     if game.vkd3d_config:
         d["VKD3D_CONFIG"] = game.vkd3d_config
     return d
+
+
+def rename_game(old_name: str, new_name: str) -> Path:
+    """Rename a game, moving its conf, artwork and favourite together.
+
+    The conf stem is the game's identity, so a rename has to move all
+    three or they drift apart.
+    """
+    old_conf = GAMES_DIR / f"{old_name}.conf"
+    new_conf = GAMES_DIR / f"{new_name}.conf"
+    if not old_conf.is_file():
+        raise FileNotFoundError(old_conf)
+    if new_conf.exists():
+        raise FileExistsError(new_conf)
+
+    data = load(old_conf)
+    data["GAME_NAME"] = new_name
+    save(new_conf, data)
+    old_conf.unlink()
+
+    artwork.rename(old_name, new_name)
+
+    favs = _load_favorites()
+    if old_name in favs:
+        favs.discard(old_name)
+        favs.add(new_name)
+        _save_favorites(favs)
+    return new_conf
 
 
 def add_game(game: Game) -> Path:

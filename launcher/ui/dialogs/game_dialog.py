@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -15,12 +17,15 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from launcher.core import prefixes
 from launcher.core.games import Game
+from launcher.core.paths import BASE_DIR, PREFIXES_DIR
 from launcher.ui.dialogs.confirm import warn
 
 
@@ -99,6 +104,35 @@ class AddGameDialog(QDialog):
         proton_layout.addLayout(dll_row)
 
         form_layout.addWidget(proton_group)
+
+        # Wine prefix
+        prefix_group = QGroupBox("Wine Prefix")
+        prefix_layout = QVBoxLayout(prefix_group)
+
+        self._prefix_shared = QRadioButton("Shared prefix")
+        self._prefix_custom = QRadioButton("Custom prefix")
+        self._prefix_shared.setChecked(True)
+        self._prefix_shared.toggled.connect(self._update_prefix_state)
+        prefix_layout.addWidget(self._prefix_shared)
+        prefix_layout.addWidget(self._prefix_custom)
+
+        prefix_row = QHBoxLayout()
+        self._prefix_edit = QLineEdit()
+        self._prefix_edit.setPlaceholderText(prefixes.suggest("Game"))
+        self._prefix_edit.textChanged.connect(self._update_prefix_status)
+        prefix_row.addWidget(self._prefix_edit)
+        self._prefix_browse = QPushButton("Browse")
+        self._prefix_browse.setFixedWidth(80)
+        self._prefix_browse.clicked.connect(self._browse_prefix)
+        prefix_row.addWidget(self._prefix_browse)
+        prefix_layout.addLayout(prefix_row)
+
+        self._prefix_status = QLabel()
+        self._prefix_status.setObjectName("hintLabel")
+        self._prefix_status.setWordWrap(True)
+        prefix_layout.addWidget(self._prefix_status)
+
+        form_layout.addWidget(prefix_group)
 
         # Gamescope settings
         gs_group = QGroupBox("Gamescope Settings")
@@ -195,6 +229,12 @@ class AddGameDialog(QDialog):
         self._gsargs_edit.setText(g.gamescope_args)
         self._override_id_edit.setText(g.override_app_id)
         self._extra_vars_edit.setText(";".join(g.extra_vars))
+        if g.prefix:
+            self._prefix_custom.setChecked(True)
+            self._prefix_edit.setText(g.prefix)
+        else:
+            self._prefix_shared.setChecked(True)
+        self._update_prefix_state()
 
     def _toggle_gamescope(self, checked: bool) -> None:
         self._gs_widget.setVisible(checked)
@@ -203,6 +243,36 @@ class AddGameDialog(QDialog):
         path, _ = QFileDialog.getOpenFileName(self, "Select Game Executable", "", "Executables (*.exe);;All Files (*)")
         if path:
             self._exe_edit.setText(path)
+
+    def _update_prefix_state(self) -> None:
+        custom = self._prefix_custom.isChecked()
+        self._prefix_edit.setEnabled(custom)
+        self._prefix_browse.setEnabled(custom)
+        if custom and not self._prefix_edit.text().strip():
+            name = self._name_edit.text().strip()
+            if name:
+                self._prefix_edit.setText(prefixes.suggest(name))
+        self._update_prefix_status()
+
+    def _update_prefix_status(self) -> None:
+        raw = self._prefix_edit.text().strip() if self._prefix_custom.isChecked() else ""
+        info = prefixes.inspect(raw)
+        self._prefix_status.setText(info.message)
+
+    def _browse_prefix(self) -> None:
+        start = self._prefix_edit.text().strip()
+        base = str(prefixes.resolve(start).parent if start else PREFIXES_DIR)
+        path = QFileDialog.getExistingDirectory(self, "Select Prefix Folder", base)
+        if not path:
+            return
+        chosen = Path(path)
+        try:
+            # Keep it relative when it lives under the launcher, so the
+            # config stays portable.
+            chosen = chosen.relative_to(BASE_DIR)
+        except ValueError:
+            pass
+        self._prefix_edit.setText(str(chosen))
 
     def _browse_proton(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Proton Directory")
@@ -241,22 +311,31 @@ class AddGameDialog(QDialog):
         extra_text = self._extra_vars_edit.text().strip()
         extra_vars = [v.strip() for v in extra_text.split(";") if v.strip()]
 
-        conf_path = Path("") if not self.is_edit or self.game is None else self.game.conf_path
-
-        return Game(
-            name=name,
-            conf_path=conf_path,
-            executable=self._exe_edit.text().strip(),
-            game_id=self._appid_edit.text().strip() or "480",
-            game_args=game_args,
-            custom_proton_path=self._proton_edit.text().strip(),
-            additional_dlls=additional_dlls,
-            use_gamescope=self._gs_check.isChecked(),
-            gamescope_w=self._gsw_edit.text().strip() or "1280",
-            gamescope_h=self._gsh_edit.text().strip() or "720",
-            gamescope_w_out=self._gswout_edit.text().strip() or "1920",
-            gamescope_h_out=self._gshout_edit.text().strip() or "1080",
-            gamescope_args=self._gsargs_edit.text().strip() or "-f -e",
-            override_app_id=self._override_id_edit.text().strip(),
-            extra_vars=extra_vars,
+        prefix = (
+            self._prefix_edit.text().strip() if self._prefix_custom.isChecked() else ""
         )
+
+        edited: dict[str, Any] = {
+            "name": name,
+            "executable": self._exe_edit.text().strip(),
+            "game_id": self._appid_edit.text().strip() or "480",
+            "game_args": game_args,
+            "custom_proton_path": self._proton_edit.text().strip(),
+            "additional_dlls": additional_dlls,
+            "use_gamescope": self._gs_check.isChecked(),
+            "gamescope_w": self._gsw_edit.text().strip() or "1280",
+            "gamescope_h": self._gsh_edit.text().strip() or "720",
+            "gamescope_w_out": self._gswout_edit.text().strip() or "1920",
+            "gamescope_h_out": self._gshout_edit.text().strip() or "1080",
+            "gamescope_args": self._gsargs_edit.text().strip() or "-f -e",
+            "override_app_id": self._override_id_edit.text().strip(),
+            "prefix": prefix,
+            "extra_vars": extra_vars,
+        }
+
+        if self.is_edit and self.game is not None:
+            # replace() rather than a fresh Game: the form does not expose
+            # every field, and rebuilding silently dropped the ones it
+            # does not show (winedebug, vkd3d_config and friends).
+            return replace(self.game, **edited)
+        return Game(conf_path=Path(""), **edited)

@@ -53,6 +53,26 @@ def _parse_array(raw: str) -> list[str]:
     return [_unquote(item.strip()) for item in inner.split()]
 
 
+_ENV_PAIR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def normalize_env_pairs(items: list[str]) -> list[str]:
+    """Split packed "A=1 B=2" entries into separate environment pairs.
+
+    Older configs stored several variables in a single array element.
+    An element is only split when every resulting token is itself a
+    KEY=VALUE pair, so a legitimate FOO="bar baz" keeps its value.
+    """
+    result: list[str] = []
+    for item in items:
+        parts = item.split()
+        if len(parts) > 1 and all(_ENV_PAIR.match(p) for p in parts):
+            result.extend(parts)
+        else:
+            result.append(item)
+    return result
+
+
 def load(conf_path: str | Path) -> dict[str, str | list[str]]:
     """Parse a .conf file into a dict.
 
@@ -75,7 +95,8 @@ def load(conf_path: str | Path) -> dict[str, str | list[str]]:
         raw = m.group("value").strip()
 
         if key in _ARRAY_KEYS:
-            data[key] = _parse_array(raw)
+            values = _parse_array(raw)
+            data[key] = normalize_env_pairs(values) if key == "extra_vars" else values
         else:
             data[key] = _unquote(raw)
 

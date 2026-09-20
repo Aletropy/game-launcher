@@ -15,3 +15,6 @@ __pycache__/
 # Bundled third-party binaries
 /winetricks
 /cabextract
+
+# Per-game Wine prefixes
+/prefixes/

@@ -340,6 +340,147 @@ def artwork_cleanup_only_does_what_was_asked() -> None:
 
 
 # --------------------------------------------------------------------------
+# prefixes and config plumbing
+# --------------------------------------------------------------------------
+
+
+@test
+def prefix_resolution_matches_the_shell() -> None:
+    from launcher.core import prefixes
+    from launcher.core.paths import BASE_DIR
+
+    assert prefixes.resolve("") == prefixes.shared_prefix_path()
+    assert prefixes.resolve("prefixes/Ds3") == BASE_DIR / "prefixes" / "Ds3"
+    assert prefixes.resolve("/mnt/ssd/ds3") == Path("/mnt/ssd/ds3")
+    assert prefixes.resolve("~/wine/ds3") == Path.home() / "wine" / "ds3"
+
+    assert prefixes.inspect("").is_shared
+    outside = prefixes.inspect("/mnt/definitely-not-here/ds3")
+    assert "flatpak" in outside.message.lower()
+    assert "will be created" in prefixes.inspect("prefixes/Nope").message.lower()
+
+
+@test
+def shell_resolves_the_same_prefixes_as_python() -> None:
+    """The shell and core/prefixes.py must not drift apart."""
+    import subprocess
+
+    from launcher.core import prefixes
+    from launcher.core.paths import BASE_DIR, GAMES_DIR
+
+    script = BASE_DIR / "game-launcher.sh"
+    if not script.is_file():
+        return
+
+    conf = GAMES_DIR / "__smoketest.conf"
+    cases = ["", "prefixes/Smoke Test", "~/wine/smoke", "/mnt/ssd/smoke"]
+    try:
+        for raw in cases:
+            body = 'GAME_EXECUTABLE="/games/smoke.exe"\n'
+            if raw:
+                body += f'GAME_PREFIX="{raw}"\n'
+            conf.write_text(body, encoding="utf-8")
+            out = subprocess.run(
+                ["bash", str(script), "--dry-run", "__smoketest"],
+                capture_output=True,
+                check=False,
+                text=True,
+                cwd=BASE_DIR,
+            )
+            line = next(
+                ln for ln in out.stdout.splitlines() if ln.startswith("WINEPREFIX:")
+            )
+            from_shell = line.split(":", 1)[1].strip()
+            from_python = str(prefixes.resolve(raw))
+            assert from_shell == from_python, f"{raw!r}: {from_shell} != {from_python}"
+    finally:
+        conf.unlink(missing_ok=True)
+
+
+@test
+def shell_exports_previously_dead_config_keys() -> None:
+    import subprocess
+
+    from launcher.core.paths import BASE_DIR, GAMES_DIR
+
+    script = BASE_DIR / "game-launcher.sh"
+    if not script.is_file():
+        return
+
+    conf = GAMES_DIR / "__smoketest.conf"
+    conf.write_text(
+        'GAME_EXECUTABLE="/games/smoke.exe"\n'
+        'CUSTOM_PROTON_PATH="/opt/proton-ge"\n'
+        'OVERRIDE_APP_ID="987654"\n'
+        'WINEDEBUG="-all"\n'
+        'VKD3D_CONFIG="dxr"\n'
+        'extra_vars=("A=1 B=2" "KEEPS=a space")\n',
+        encoding="utf-8",
+    )
+    try:
+        out = subprocess.run(
+            ["bash", str(script), "--dry-run", "__smoketest"],
+            capture_output=True,
+            text=True,
+            check=False,
+            cwd=BASE_DIR,
+        ).stdout
+    finally:
+        conf.unlink(missing_ok=True)
+
+    assert "PROTONPATH:  /opt/proton-ge" in out, out
+    assert "GAMEID:      987654" in out, out
+    for expected in ("A=1", "B=2", "WINEDEBUG=-all", "VKD3D_CONFIG=dxr"):
+        assert f"- {expected}" in out, f"{expected} missing from:\n{out}"
+    # A value containing a space must not be split apart.
+    assert "- KEEPS=a space" in out, out
+
+
+@test
+def packed_extra_vars_are_normalized_on_load() -> None:
+    assert config.normalize_env_pairs(["A=1 B=2 C=3"]) == ["A=1", "B=2", "C=3"]
+    # Not every token is a pair, so this one stays whole.
+    assert config.normalize_env_pairs(["FOO=bar baz"]) == ["FOO=bar baz"]
+    assert config.normalize_env_pairs(["SOLO=x"]) == ["SOLO=x"]
+
+
+@test
+def editing_a_game_preserves_fields_the_form_hides() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from launcher.ui.dialogs.game_dialog import AddGameDialog
+
+    with tempfile.TemporaryDirectory() as d:
+        conf = Path(d) / "Test Game.conf"
+        original = games.Game(
+            name="Test Game",
+            conf_path=conf,
+            executable="/games/test.exe",
+            winedebug="-all",
+            vkd3d_config="dxr",
+            radv_perftest="gpl",
+            pulse_latency_msec="60",
+            proton_use_wine_sync="1",
+            prefix="prefixes/Test Game",
+        )
+        config.save(conf, games._build_data(original))
+        loaded = games._game_from_conf(conf, set())
+
+        edited = AddGameDialog(game=loaded).get_game()
+        hidden = (
+            "winedebug",
+            "vkd3d_config",
+            "radv_perftest",
+            "pulse_latency_msec",
+            "proton_use_wine_sync",
+        )
+        for f in hidden:
+            assert getattr(edited, f) == getattr(original, f), f
+        assert edited.prefix == "prefixes/Test Game"
+
+
+# --------------------------------------------------------------------------
 
 
 def main() -> int:

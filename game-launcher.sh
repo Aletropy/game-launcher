@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 WRAPPED=0
+DRY_RUN=0
 
 # ----------------------------
 # Defaults globais
@@ -46,7 +47,7 @@ parse_arguments() {
                 break
                 ;;
             *=*)
-                EXTRA_VARS+=("${1@Q}")
+                EXTRA_VARS+=("$1")
                 shift
                 ;;
             *)
@@ -59,8 +60,81 @@ parse_arguments() {
     shift
 
     for arg in "$@"; do
-        EXTRA_ARGS+=("${arg@Q}")
+        EXTRA_ARGS+=("$arg")
     done
+}
+
+# ----------------------------
+# Overrides vindos do .conf do jogo
+# ----------------------------
+# Roda depois do `source "$CONFIG"`, e antes de wrap(): WINEPREFIX, PROTONPATH,
+# GAMEID e EXTRA_VARS ja fazem parte da lista de overrides do wrap, entao nada
+# precisa ser adicionado la.
+resolve_conf_overrides() {
+    # Prefixo por jogo. Vazio/ausente mantem o prefixo compartilhado.
+    if [ -n "${GAME_PREFIX:-}" ]; then
+        case "$GAME_PREFIX" in
+            "~/"*) WINEPREFIX="$HOME/${GAME_PREFIX#\~/}" ;;
+            /*)    WINEPREFIX="$GAME_PREFIX" ;;
+            *)     WINEPREFIX="$BASE_DIR/$GAME_PREFIX" ;;
+        esac
+    fi
+
+    # Proton por jogo (caminho valido DENTRO do flatpak).
+    [ -n "${CUSTOM_PROTON_PATH:-}" ] && PROTONPATH="$CUSTOM_PROTON_PATH"
+
+    # App ID alternativo resolve para GAMEID, que ja e propagado.
+    [ -n "${OVERRIDE_APP_ID:-}" ] && GAMEID="$OVERRIDE_APP_ID"
+
+    # Variaveis de ambiente declaradas no .conf.
+    # Um item pode conter varios pares separados por espaco (formato antigo),
+    # mas so e dividido quando TODOS os pedacos sao KEY=VALUE -- caso
+    # contrario FOO="bar baz" perderia o valor.
+    if [ "${#extra_vars[@]}" -gt 0 ] 2>/dev/null; then
+        local var kv splittable
+        for var in "${extra_vars[@]}"; do
+            # shellcheck disable=SC2086
+            set -- $var
+            splittable=1
+            [ "$#" -gt 1 ] || splittable=0
+            for kv in "$@"; do
+                case "$kv" in
+                    [A-Za-z_]*=*) ;;
+                    *) splittable=0 ;;
+                esac
+            done
+            if [ "$splittable" = 1 ]; then
+                for kv in "$@"; do
+                    EXTRA_VARS+=("$kv")
+                done
+            else
+                EXTRA_VARS+=("$var")
+            fi
+        done
+    fi
+
+    local key
+    for key in PROTON_USE_WINE_SYNC WINEDEBUG RADV_PERFTEST PULSE_LATENCY_MSEC VKD3D_CONFIG; do
+        [ -n "${!key:-}" ] && EXTRA_VARS+=("$key=${!key}")
+    done
+
+    return 0
+}
+
+print_resolved_config() {
+    echo "GAME:        ${1:-<none>}"
+    echo "PROGRAMPATH: $PROGRAMPATH"
+    echo "WINEPREFIX:  $WINEPREFIX"
+    echo "PROTONPATH:  $PROTONPATH"
+    echo "GAMEID:      $GAMEID"
+    echo "USE_GAMESCOPE: $USE_GAMESCOPE"
+    echo "EXTRA_ARGS:  ${EXTRA_ARGS[*]}"
+    echo "EXTRA_VARS:"
+    local var
+    for var in "${EXTRA_VARS[@]}"; do
+        echo "  - $var"
+    done
+    echo "ADDITIONAL_DLLS: ${ADDITIONAL_DLLS[*]}"
 }
 
 # ----------------------------
@@ -124,7 +198,12 @@ run_game() {
         export "$var"
     done
 
-    mkdir -p "$WINEPREFIX"
+    if ! mkdir -p "$WINEPREFIX" 2>/dev/null; then
+        echo "Nao foi possivel criar o prefixo: $WINEPREFIX" >&2
+        echo "Se ele esta fora da pasta do launcher ou da home, a Steam" >&2
+        echo "Flatpak provavelmente nao enxerga esse caminho." >&2
+        exit 1
+    fi
 
     EXEC_DIR="$(dirname "$PROGRAMPATH")"
     cd "$EXEC_DIR" || exit 1
@@ -190,17 +269,25 @@ run_game() {
 # Modo externo (host)
 # ----------------------------
 main_unwrapped() {
+    GAME_LABEL=""
     if [ "$1" = "-exec" ]; then
         shift
         parse_arguments "$@"
     else
+        GAME_LABEL="$1"
         CONFIG="$BASE_DIR/games/$1.conf"
         if [ ! -f "$CONFIG" ]; then
             echo "Configuração não encontrada: $1"
             exit 1
         fi
         source "$CONFIG"
+        resolve_conf_overrides
         parse_arguments "$GAME_EXECUTABLE" "${GAME_ARGS[@]}"
+    fi
+
+    if (( DRY_RUN )); then
+        print_resolved_config "$GAME_LABEL"
+        exit 0
     fi
 
     STEAM_PID=$(flatpak ps | awk 'tolower($3) ~ /steam/ {print $2}' | sort -n | head -n1)
@@ -222,8 +309,13 @@ if (( WRAPPED )); then
     run_game "$@"
 else
     # CORRIGIDO: Adicionado espaço entre o if e o[
+    if [ "$1" = "--dry-run" ] || [ "$1" = "-n" ]; then
+        DRY_RUN=1
+        shift
+    fi
+
     if [ -z "$1" ]; then
-        echo "Uso: launcher <jogo> | -exec <exe>"
+        echo "Uso: launcher [--dry-run] <jogo> | -exec <exe>"
         echo "Jogos disponíveis:"
         ls "$BASE_DIR/games" 2>/dev/null | sed 's/\.conf//'
         exit 1
