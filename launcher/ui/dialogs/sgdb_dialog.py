@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import threading
-import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QCloseEvent, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -26,16 +24,58 @@ from PySide6.QtWidgets import (
 from launcher.core.settings import get_sgdb_api_key, set_sgdb_api_key
 from launcher.services import artwork
 from launcher.services.sgdb import (
-    SGDBError,
     download_bytes,
     get_grids,
     get_heroes,
     search_games,
 )
+from launcher.services.tasks import TaskGroup
 from launcher.ui.dialogs.confirm import warn
 
 _THUMB_SIZE = (200, 120)
 _GRID_SPACING = 8
+
+
+@dataclass(frozen=True)
+class _SearchResult:
+    items: list
+    art_type: str
+
+
+@dataclass(frozen=True)
+class _DownloadResult:
+    game_name: str
+    art: str
+    data: bytes
+
+
+def _fetch_artwork_list(query: str, api_key: str, art_type: str) -> _SearchResult:
+    """Look a game up and fetch its artwork list. Runs off the GUI thread."""
+    games = search_games(query, api_key)
+    if not games:
+        raise ValueError("No games found.")
+    game_id = games[0]["id"]
+    items = get_heroes(game_id, api_key) if art_type == "hero" else get_grids(
+        game_id, api_key
+    )
+    return _SearchResult(items=items, art_type=art_type)
+
+
+def _fetch_thumb(url: str) -> QImage:
+    """Fetch a thumbnail as a QImage.
+
+    Deliberately not a QPixmap: Qt only supports building those on the
+    GUI thread, and the previous code did it on a worker.
+    """
+    image = QImage()
+    image.loadFromData(download_bytes(url))
+    if image.isNull():
+        raise ValueError("could not decode thumbnail")
+    return image
+
+
+def _fetch_download(url: str, game_name: str, art: str) -> _DownloadResult:
+    return _DownloadResult(game_name=game_name, art=art, data=download_bytes(url))
 
 
 class _ImageTile(QFrame):
@@ -78,11 +118,6 @@ class SGDBDialog(QDialog):
     """Dialog to search SteamGridDB and download hero/grid artwork."""
 
     artwork_downloaded = Signal(Path)
-    _sig_search_done = Signal(list, str)
-    _sig_search_error = Signal(str)
-    _sig_thumb_ready = Signal(object, QPixmap)
-    _sig_download_done = Signal(object)
-    _sig_download_error = Signal(str)
 
     def __init__(
         self,
@@ -97,12 +132,16 @@ class SGDBDialog(QDialog):
         self.setMinimumSize(700, 600)
         self._selected_url: str = ""
         self._tiles: list[_ImageTile] = []
+        #: Token -> tile, so a late thumbnail cannot reach a deleted widget.
+        self._thumb_tokens: dict[int, _ImageTile] = {}
+        self._search_token = -1
+        self._download_token = -1
+
+        self._tasks = TaskGroup(self)
+        self._tasks.finished.connect(self._on_task_finished)
+        self._tasks.failed.connect(self._on_task_failed)
+
         self._setup_ui()
-        self._sig_search_done.connect(self._populate_results)
-        self._sig_search_error.connect(self._show_error)
-        self._sig_thumb_ready.connect(self._set_thumb_pixmap)
-        self._sig_download_done.connect(self._on_download_done)
-        self._sig_download_error.connect(self._show_error)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -195,37 +234,31 @@ class SGDBDialog(QDialog):
             return
         art_type = self._type_combo.currentText().lower().rstrip("s")
         self._search_btn.setEnabled(False)
-        self._status_label.setText("Searching...")
+        self._status_label.setText("Searching\u2026")
         self._clear_results()
-        threading.Thread(
-            target=self._do_search, args=(query, key, art_type), daemon=True
-        ).start()
+        self._search_token = self._tasks.submit(
+            _fetch_artwork_list, query, key, art_type
+        )
 
-    def _do_search(self, query: str, api_key: str, art_type: str) -> None:
-        try:
-            games = search_games(query, api_key)
-        except SGDBError as e:
-            self._sig_search_error.emit(str(e))
-            return
-        except Exception as e:
-            self._sig_search_error.emit(f"Unexpected error: {e}")
-            return
-        if not games:
-            self._sig_search_error.emit("No games found.")
-            return
-        game_id = games[0]["id"]
-        try:
-            if art_type == "hero":
-                results = get_heroes(game_id, api_key)
-            else:
-                results = get_grids(game_id, api_key)
-        except SGDBError as e:
-            self._sig_search_error.emit(str(e))
-            return
-        except Exception as e:
-            self._sig_search_error.emit(f"Unexpected error: {e}")
-            return
-        self._sig_search_done.emit(results, art_type)
+    def _on_task_finished(self, token: int, result: object) -> None:
+        """Route a completed task by the token it was given."""
+        if token == self._search_token:
+            assert isinstance(result, _SearchResult)
+            self._populate_results(result.items, result.art_type)
+        elif token == self._download_token:
+            assert isinstance(result, _DownloadResult)
+            self._on_download_done(result)
+        elif (tile := self._thumb_tokens.pop(token, None)) is not None:
+            assert isinstance(result, QImage)
+            # QPixmap construction belongs on this thread, not the worker.
+            tile.set_pixmap(QPixmap.fromImage(result))
+
+    def _on_task_failed(self, token: int, message: str) -> None:
+        if token == self._search_token or token == self._download_token:
+            self._show_error(message)
+        else:
+            # A thumbnail that will not load just stays blank.
+            self._thumb_tokens.pop(token, None)
 
     def _populate_results(self, results: list, art_type: str) -> None:
         self._search_btn.setEnabled(True)
@@ -241,9 +274,7 @@ class SGDBDialog(QDialog):
             tile = _ImageTile(full_url)
             tile.clicked.connect(self._on_tile_clicked)
             self._tiles.append(tile)
-            threading.Thread(
-                target=self._load_thumb, args=(thumb_url, tile), daemon=True
-            ).start()
+            self._thumb_tokens[self._tasks.submit(_fetch_thumb, thumb_url)] = tile
         self._relayout_grid()
 
     def _relayout_grid(self) -> None:
@@ -269,21 +300,6 @@ class SGDBDialog(QDialog):
         self._search_btn.setEnabled(True)
         self._status_label.setText(msg)
 
-    def _load_thumb(self, url: str, tile: _ImageTile) -> None:
-        try:
-            req = urllib.request.Request(url)
-            req.add_header("User-Agent", "Mozilla/5.0")
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = resp.read()
-            pix = QPixmap()
-            pix.loadFromData(data)
-            self._sig_thumb_ready.emit(tile, pix)
-        except Exception:
-            pass
-
-    def _set_thumb_pixmap(self, tile: _ImageTile, pixmap: QPixmap) -> None:
-        tile.set_pixmap(pixmap)
-
     def _on_tile_clicked(self, url: str) -> None:
         self._selected_url = url
         self._download_btn.setEnabled(True)
@@ -297,28 +313,16 @@ class SGDBDialog(QDialog):
             return
         art = artwork.HERO.name if self._type_combo.currentText() == "Heroes" else artwork.GRID.name
         self._download_btn.setEnabled(False)
-        self._status_label.setText("Downloading...")
-        threading.Thread(
-            target=self._do_download,
-            args=(self._selected_url, game_name, art),
-            daemon=True,
-        ).start()
+        self._status_label.setText("Downloading\u2026")
+        self._download_token = self._tasks.submit(
+            _fetch_download, self._selected_url, game_name, art
+        )
 
-    def _do_download(self, url: str, game_name: str, art: str) -> None:
+    def _on_download_done(self, result: _DownloadResult) -> None:
+        # Storing happens here, not on the worker: it writes the file and
+        # invalidates the shared pixmap cache.
         try:
-            # Fetch the bytes here, but store on the GUI thread: the artwork
-            # service writes and invalidates the shared pixmap cache.
-            data = download_bytes(url)
-            self._sig_download_done.emit((game_name, art, data))
-        except SGDBError as e:
-            self._sig_download_error.emit(str(e))
-        except Exception as e:
-            self._sig_download_error.emit(f"Download failed: {e}")
-
-    def _on_download_done(self, payload: object) -> None:
-        game_name, art, data = cast("tuple[str, str, bytes]", payload)
-        try:
-            path = artwork.store(game_name, art, data)
+            path = artwork.store(result.game_name, result.art, result.data)
         except OSError as e:
             self._show_error(f"Could not save artwork: {e}")
             return
@@ -327,10 +331,28 @@ class SGDBDialog(QDialog):
         self.artwork_downloaded.emit(path)
 
     def _clear_results(self) -> None:
+        # Tiles are about to be destroyed, so drop any thumbnail still in
+        # flight rather than letting it arrive at a deleted widget.
+        self._tasks.cancel_all()
+        self._thumb_tokens.clear()
+        self._search_token = -1
+        self._download_token = -1
+
         while self._results_layout.count():
             child = self._results_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+            widget = child.widget() if child is not None else None
+            if widget is not None:
+                widget.deleteLater()
         self._tiles.clear()
         self._selected_url = ""
         self._download_btn.setEnabled(False)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._tasks.cancel_all()
+        self._thumb_tokens.clear()
+        super().closeEvent(event)
+
+    def reject(self) -> None:
+        self._tasks.cancel_all()
+        self._thumb_tokens.clear()
+        super().reject()

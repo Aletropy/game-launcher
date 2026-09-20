@@ -577,6 +577,64 @@ def grid_lays_out_cards_when_its_page_is_shown() -> None:
     win.close()
 
 
+@test
+def background_tasks_report_and_cancel() -> None:
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from launcher.services.tasks import TaskGroup
+
+    def pump(predicate, timeout=5.0) -> None:
+        start = time.time()
+        while not predicate() and time.time() - start < timeout:
+            app.processEvents()
+            time.sleep(0.01)
+
+    group = TaskGroup()
+    done: list[object] = []
+    failed: list[str] = []
+    group.finished.connect(lambda _t, r: done.append(r))
+    group.failed.connect(lambda _t, m: failed.append(m))
+
+    for i in range(5):
+        group.submit(lambda n=i: n * 2)
+    pump(lambda: len(done) == 5)
+    assert sorted(done) == [0, 2, 4, 6, 8], done
+
+    def boom() -> None:
+        raise ValueError("boom")
+
+    group.submit(boom)
+    pump(lambda: bool(failed))
+    assert failed and "boom" in failed[0]
+
+    # A result still in flight when cancel_all() runs must be dropped.
+    late = TaskGroup()
+    arrived: list[object] = []
+    late.finished.connect(lambda _t, r: arrived.append(r))
+    late.submit(lambda: (time.sleep(0.3), "late")[1])
+    late.cancel_all()
+    pump(lambda: False, timeout=0.8)
+    assert arrived == [], arrived
+
+
+@test
+def task_tokens_fit_in_a_qt_int() -> None:
+    """Signal(int) is a 32-bit C++ int; wider tokens overflow."""
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from launcher.services.tasks import TaskGroup
+
+    group = TaskGroup()
+    for _ in range(3):
+        group.cancel_all()
+        token = group.submit(lambda: None)
+        assert token < 2**31, token
+
+
 # --------------------------------------------------------------------------
 
 
