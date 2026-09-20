@@ -68,7 +68,11 @@ class AppContext:
         return cls.create(Paths.for_testing(root))
 
     def close(self) -> None:
-        """Release resources. Safe to call more than once."""
+        """Release resources. Safe to call more than once.
+
+        Wine tools are started detached and deliberately left running:
+        closing the launcher should not interrupt a winetricks session
+        part way through changing a prefix.
+        """
         self.processes.stop_all()
-        self.prefix_tools.kill_all()
         self.state.close()

@@ -188,32 +188,39 @@ class GameDetailPanel(QWidget):
         return row
 
     def _build_menu(self) -> QMenu:
-        menu = QMenu(self)
-        menu.addAction(
-            "Fetch artwork…", lambda: self._emit_named(self.artwork_requested)
+        # Every menu is constructed with an explicit parent and kept as an
+        # attribute. QMenu.addMenu(title) hands the new submenu to Python,
+        # and letting it fall out of scope destroys the C++ object while
+        # the parent menu still points at it -- the entry then opens an
+        # empty submenu and none of its actions can be reached.
+        self._more_menu = QMenu(self)
+        self._more_menu.addAction(
+            "Fetch artwork\u2026", lambda: self._emit_named(self.artwork_requested)
         )
-        menu.addSeparator()
+        self._more_menu.addSeparator()
 
-        prefix_menu = menu.addMenu("Prefix")
-        prefix_menu.addAction(
-            "Open folder", lambda: self._emit_tool("open")
-        )
-        prefix_menu.addAction(
+        self._prefix_menu = QMenu("Prefix", self)
+        self._prefix_menu.addAction("Open folder", lambda: self._emit_tool("open"))
+        self._prefix_menu.addAction(
             "Wine configuration", lambda: self._emit_tool("winecfg")
         )
-        prefix_menu.addAction("Winetricks", lambda: self._emit_tool("winetricks"))
-        prefix_menu.addAction(
+        self._prefix_menu.addAction(
+            "Winetricks", lambda: self._emit_tool("winetricks")
+        )
+        self._prefix_menu.addAction(
             "Wine file browser", lambda: self._emit_tool("explorer")
         )
+        self._more_menu.addMenu(self._prefix_menu)
 
-        saves_menu = menu.addMenu("Saves")
-        saves_menu.addAction(
+        self._saves_menu = QMenu("Saves", self)
+        self._saves_menu.addAction(
             "Back up now", lambda: self._emit_named(self.backup_requested)
         )
-        saves_menu.addAction(
-            "Restore…", lambda: self._emit_named(self.restore_requested)
+        self._saves_menu.addAction(
+            "Restore\u2026", lambda: self._emit_named(self.restore_requested)
         )
-        return menu
+        self._more_menu.addMenu(self._saves_menu)
+        return self._more_menu
 
     # -- population ----------------------------------------------------
 

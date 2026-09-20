@@ -901,6 +901,126 @@ def grid_lays_out_cards_when_its_page_is_shown() -> None:
 
 
 @test
+def detail_menu_submenus_survive_garbage_collection() -> None:
+    """Regression: QMenu.addMenu(title) hands the submenu to Python.
+
+    Letting it fall out of scope destroyed the C++ object while the
+    parent menu still referenced it, so the Prefix and Saves entries
+    opened empty and none of the tools could be reached.
+    """
+    import gc
+
+    from launcher.app.main import build_window
+    from launcher.domain.models import GameConfig
+
+    app = qt_app()
+    with sandbox() as ctx:
+        ctx.games.add(GameConfig(name="Alpha", executable="/g/a.exe"))
+        window = build_window(ctx)
+        window.show()
+        app.processEvents()
+        window._sidebar.select_game("Alpha")
+        app.processEvents()
+        gc.collect()
+
+        emitted: list[tuple[str, str]] = []
+        window._detail.prefix_tool_requested.connect(
+            lambda n, t: emitted.append((n, t))
+        )
+        # The window's own handler would really try to run the tool, fail
+        # on a prefix that does not exist, and open a modal warning that
+        # blocks the suite. Only the menu wiring is under test here.
+        ctx.prefix_tools.run = lambda *_: True
+        ctx.prefix_tools.open_folder = lambda *_: True
+
+        menu = window._detail._more_btn.menu()
+        assert menu is not None
+        submenus = {
+            a.text(): a.menu() for a in menu.actions() if a.menu() is not None
+        }
+        assert set(submenus) == {"Prefix", "Saves"}, sorted(submenus)
+
+        prefix_menu = submenus["Prefix"]
+        labels = [a.text() for a in prefix_menu.actions()]
+        assert labels == [
+            "Open folder",
+            "Wine configuration",
+            "Winetricks",
+            "Wine file browser",
+        ], labels
+
+        for action in prefix_menu.actions():
+            action.trigger()
+        app.processEvents()
+        assert [t for _, t in emitted] == [
+            "open",
+            "winecfg",
+            "winetricks",
+            "explorer",
+        ], emitted
+        window.close()
+
+
+@test
+def proton_prefixes_run_tools_through_the_launcher_script() -> None:
+    """A Proton prefix can only be opened by the Proton that built it.
+
+    That Proton lives inside the Steam Flatpak, so the tool has to go
+    through game-launcher.sh rather than the host's wine.
+    """
+    from launcher.services import prefix_tools as pt
+
+    with sandbox() as ctx:
+        prefix = ctx.paths.base / "Prefix"
+        drive_c = prefix / "pfx" / "drive_c"
+        (drive_c / "windows" / "system32").mkdir(parents=True)
+        # Proton links these into the Flatpak, so on the host they are
+        # dangling symlinks that only resolve inside the container.
+        (drive_c / "windows" / "system32" / "winecfg.exe").symlink_to(
+            "/app/share/steam/nowhere/winecfg.exe"
+        )
+        ctx.paths.launcher_script.write_text("#!/usr/bin/env bash\n")
+        assert pt.is_proton_prefix(prefix)
+
+        pt.steam_flatpak_running = lambda: True
+        command = ctx.prefix_tools._proton_command(
+            pt.TOOLS_BY_KEY["winecfg"], prefix
+        )
+        assert command is not None, "fell back to host wine for a Proton prefix"
+        program, args = command
+        assert program == "bash"
+        assert str(ctx.paths.launcher_script) in args
+        assert "-exec" in args
+        assert args[-1].endswith("winecfg.exe")
+
+        # Without Steam the script exits at once, so the user must be told
+        # rather than left watching nothing happen.
+        pt.steam_flatpak_running = lambda: False
+        failures: list[tuple[str, str]] = []
+        ctx.prefix_tools.tool_failed.connect(lambda label, msg: failures.append((label, msg)))
+        assert (
+            ctx.prefix_tools._proton_command(pt.TOOLS_BY_KEY["winecfg"], prefix)
+            is None
+        )
+        assert failures and "Steam is not running" in failures[0][1]
+
+
+@test
+def a_missing_prefix_reports_instead_of_failing_silently() -> None:
+    from launcher.services import prefix_tools as pt
+
+    with sandbox() as ctx:
+        failures: list[tuple[str, str]] = []
+        ctx.prefix_tools.tool_failed.connect(lambda label, msg: failures.append((label, msg)))
+        assert ctx.prefix_tools.run("winecfg", "prefixes/Nope") is False
+        assert failures and "does not exist" in failures[0][1]
+
+        assert ctx.prefix_tools.open_folder("prefixes/Nope") is False
+        assert any("does not exist" in m for _, m in failures)
+        assert pt.TOOLS_BY_KEY["winecfg"].verb == "winecfg"
+
+
+@test
 def dialogs_all_construct() -> None:
     from launcher.domain.models import GameConfig
     from launcher.ui.dialogs.game_dialog import AddGameDialog
