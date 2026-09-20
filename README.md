@@ -55,12 +55,28 @@ alone.
 ./package.sh --clean      # remove dist/
 ```
 
-It produces two artifacts: the one-run `.run` installer, and a plain
-`.tar.gz` for anyone who would rather unpack it themselves. The `.run`
-is the same archive appended to `installer/header.sh` after a
-`__PAYLOAD_BELOW__` marker, with the payload's SHA-256 baked into the
-header; the header seeks past itself to read it back and refuses a
-payload that does not match.
+It produces three artifacts:
+
+| | |
+|---|---|
+| `*.run` | one file; run it once to install or upgrade in place |
+| `*.tar.gz` | the same payload as a plain archive |
+| `*-src.tar.gz` | the whole project, to publish anywhere |
+
+The `.run` is the release archive appended to `installer/header.sh`
+after a `__PAYLOAD_BELOW__` marker, with the payload's SHA-256 baked
+into the header; the header seeks past itself to read it back and
+refuses a payload that does not match.
+
+The source archive is built with `git archive` from `HEAD`, so it can
+only contain tracked files — the game library, stored artwork, Wine
+prefixes and the virtualenv are all ignored and cannot slip in. It is
+checked afterwards for game configs, artwork, local state and any
+mention of your home directory, and the build fails if it finds any.
+
+Your own games are deliberately not tracked: `games/*.conf` hold
+absolute paths into your home directory and describe your private
+library. `games/.gitkeep` keeps the folder in a clone.
 
 The archive carries the source, the scripts, the icon and the docs, with
 an empty `games/` folder. It leaves out the virtualenv, Wine prefixes,

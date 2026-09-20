@@ -26,11 +26,14 @@ if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
 else
     C_OK=""; C_WARN=""; C_ERR=""; C_DIM=""; C_OFF=""
 fi
-ok()   { printf '  %s✓%s %s\n' "$C_OK" "$C_OFF" "$1"; }
-warn() { printf '  %s!%s %s\n' "$C_WARN" "$C_OFF" "$1"; }
+# All status output goes to stderr: the build_* functions return the
+# path they produced on stdout, and progress messages would otherwise be
+# captured by $(...) instead of shown.
+ok()   { printf '  %s✓%s %s\n' "$C_OK" "$C_OFF" "$1" >&2; }
+warn() { printf '  %s!%s %s\n' "$C_WARN" "$C_OFF" "$1" >&2; }
 err()  { printf '  %s✗%s %s\n' "$C_ERR" "$C_OFF" "$1" >&2; }
-note() { printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF"; }
-head_() { printf '\n%s\n' "$1"; }
+note() { printf '    %s%s%s\n' "$C_DIM" "$1" "$C_OFF" >&2; }
+head_() { printf '\n%s\n' "$1" >&2; }
 
 # Files and directories copied into the archive. Anything not listed
 # here does not ship, so new private data cannot leak in by accident.
@@ -261,6 +264,60 @@ build_archive() {
     printf '%s\n' "$archive"
 }
 
+build_source_archive() {
+    local name="$1"
+    head_ "Building the source archive"
+
+    if ! git -C "$SOURCE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+        warn "not a git repository; skipping the source archive"
+        return 0
+    fi
+    if [ -n "$(git -C "$SOURCE_DIR" status --porcelain 2>/dev/null)" ]; then
+        warn "working tree has uncommitted changes"
+        note "The source archive is built from the last commit."
+    fi
+
+    local archive="$DIST_DIR/$name-src.tar.gz"
+    mkdir -p "$DIST_DIR"
+    rm -f "$archive"
+
+    # git archive ships exactly the tracked files, so anything ignored -
+    # the game library, stored artwork, prefixes, the venv - cannot be
+    # included by mistake.
+    if git -C "$SOURCE_DIR" archive --format=tar.gz \
+        --prefix="$name-src/" -o "$archive" HEAD
+    then
+        ok "built from HEAD ($(git -C "$SOURCE_DIR" rev-parse --short HEAD))"
+    else
+        err "could not build the source archive"
+        return 1
+    fi
+
+    # Publishing is one-way, so prove there is nothing personal in it.
+    local leaked=0 listing
+    listing="$(tar tzf "$archive")"
+    if printf '%s\n' "$listing" | grep -qE '/games/.*\.conf$'; then
+        err "a game config is in the source archive"
+        leaked=1
+    fi
+    if printf '%s\n' "$listing" | grep -qE '/launcher/(artwork|heroes)/'; then
+        err "stored artwork is in the source archive"
+        leaked=1
+    fi
+    if printf '%s\n' "$listing" | grep -qE '/(\.venv|Prefix|prefixes|backups|dist)/'; then
+        err "local state is in the source archive"
+        leaked=1
+    fi
+    if tar xzOf "$archive" 2>/dev/null | grep -q "$HOME"; then
+        err "the source archive mentions your home directory"
+        leaked=1
+    fi
+    [ "$leaked" -eq 0 ] || return 1
+    ok "no game configs, artwork, local state or personal paths"
+
+    printf '%s\n' "$archive"
+}
+
 build_run_installer() {
     local archive="$1" name="$2"
     head_ "Building the one-run installer"
@@ -450,6 +507,7 @@ ARCHIVE="$(build_archive "$STAGING" "$NAME" | tail -n1)" || exit 1
 test_install "$ARCHIVE" "$NAME" || exit 1
 INSTALLER="$(build_run_installer "$ARCHIVE" "$NAME" | tail -n1)" || exit 1
 test_run_installer "$INSTALLER" "$NAME" || exit 1
+SOURCE_ARCHIVE="$(build_source_archive "$NAME" | tail -n1)" || exit 1
 
 cat <<EOF
 
@@ -463,3 +521,12 @@ ${C_OK}Done.${C_OFF}
       plain archive, if you would rather unpack it yourself
           tar xzf $(basename "$ARCHIVE") && cd $NAME && ./install.sh
 EOF
+
+if [ -n "${SOURCE_ARCHIVE:-}" ] && [ -f "$SOURCE_ARCHIVE" ]; then
+cat <<EOF
+
+  $SOURCE_ARCHIVE  ($(du -h "$SOURCE_ARCHIVE" | cut -f1))
+      the whole project, to publish anywhere
+          tar xzf $(basename "$SOURCE_ARCHIVE")
+EOF
+fi
