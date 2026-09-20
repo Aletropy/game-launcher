@@ -481,6 +481,103 @@ def editing_a_game_preserves_fields_the_form_hides() -> None:
 
 
 # --------------------------------------------------------------------------
+# main window behaviour
+# --------------------------------------------------------------------------
+
+
+@test
+def selecting_a_game_never_launches_it() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from launcher.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.show()
+    app.processEvents()
+    if len(win._games) < 2:
+        return
+
+    launched: list[str] = []
+    win._process_mgr.launch = lambda n: (launched.append(n), True)[1]  # type: ignore[method-assign]
+
+    other = win._games[1].name
+    win._sidebar.select_game(other)
+    app.processEvents()
+    assert launched == [], "selection launched a game"
+    assert win._detail._game is not None
+    assert win._detail._game.name == other
+
+    win._detail._play_btn.click()
+    app.processEvents()
+    assert launched == [other], launched
+    win.close()
+
+
+@test
+def logs_are_kept_per_game() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from launcher.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.show()
+    app.processEvents()
+    if len(win._games) < 2:
+        return
+
+    first, second = win._games[0].name, win._games[1].name
+    win._sidebar.select_game(second)
+    app.processEvents()
+
+    # Output for a game that is not on screen must still be captured.
+    win._on_game_started(first)
+    win._on_game_output(first, "hello from the first game\n")
+    app.processEvents()
+    assert first in win._logs
+
+    win._sidebar.select_game(first)
+    app.processEvents()
+    shown = win._detail._log._output.toPlainText()
+    assert "hello from the first game" in shown, shown
+
+    win._sidebar.select_game(second)
+    app.processEvents()
+    assert win._detail._log._output.toPlainText() == ""
+    win.close()
+
+
+@test
+def grid_lays_out_cards_when_its_page_is_shown() -> None:
+    """A stacked page's children report isVisible() == False while hidden."""
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from launcher.ui.main_window import MainWindow
+
+    win = MainWindow()
+    win.resize(1280, 800)
+    win.show()
+    app.processEvents()
+    if not win._games:
+        return
+
+    win._switch_view(1)
+    for _ in range(3):
+        app.processEvents()
+
+    cards = win._game_grid._cards
+    positions = {c.game.name: c.pos() for c in cards}
+    assert len(positions) == len(win._games), positions
+    # Distinct positions mean every card was actually laid out.
+    assert len({(p.x(), p.y()) for p in positions.values()}) == len(positions), positions
+    # And the contents margins are honoured, not ignored.
+    assert min(p.x() for p in positions.values()) > 0, positions
+    win.close()
+
+
+# --------------------------------------------------------------------------
 
 
 def main() -> int:

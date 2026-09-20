@@ -286,6 +286,80 @@ QRadioButton::indicator:checked {
     background-color: $accent;
 }
 
+QWidget#sidebar {
+    background-color: $surface;
+    border-right: 1px solid $border;
+}
+
+QListWidget#gameList {
+    background-color: transparent;
+    border: none;
+    outline: none;
+}
+
+QListWidget#gameList::item {
+    color: $fg;
+    border-radius: ${radius}px;
+    padding: 4px 8px;
+    margin: 1px 0;
+}
+
+QListWidget#gameList::item:hover {
+    background-color: $hover;
+}
+
+QListWidget#gameList::item:selected {
+    background-color: $raised;
+    color: $fg_bright;
+}
+
+QWidget#detailPanel, QWidget#detailBody {
+    background-color: $bg;
+}
+
+QLabel#detailTitle {
+    font-size: ${font_xl}px;
+    font-weight: bold;
+    color: $fg_bright;
+}
+
+QLabel#infoValue {
+    color: $fg;
+    font-size: ${font_sm}px;
+}
+
+QLabel#warningLabel {
+    color: $favorite;
+    font-size: ${font_sm}px;
+}
+
+QPushButton#viewToggle {
+    padding: 6px 16px;
+}
+
+QPushButton#viewToggle:checked {
+    background-color: $accent;
+    color: $on_accent;
+    border-color: $accent;
+}
+
+QToolButton#sectionToggle {
+    background: transparent;
+    border: none;
+    color: $fg_bright;
+    font-size: ${font_lg}px;
+    font-weight: bold;
+    padding: 4px 0;
+}
+
+QToolButton#sectionToggle:hover {
+    color: $link;
+}
+
+QSplitter::handle {
+    background-color: $border;
+}
+
 QGroupBox {
     color: $fg;
     border: 1px solid $border;

@@ -161,19 +161,25 @@ class FlowLayout(QLayout):
         return self.minimumSize()
 
     def _do_layout(self, width: int, dry: bool) -> int:
-        x = 0
-        y = 0
+        margins = self.contentsMargins()
+        left = margins.left()
+        available = max(1, width - left - margins.right())
+        x = left
+        y = margins.top()
         row_height = 0
 
         for item in self._items:
             widget = item.widget()
-            if widget is None or not widget.isVisible():
+            # isHidden(), not isVisible(): a widget whose ancestor is hidden
+            # is "not visible" but must still be laid out, or the grid comes
+            # up empty the first time its page is shown.
+            if widget is None or widget.isHidden():
                 continue
             w = item.sizeHint().width()
             h = item.sizeHint().height()
 
-            if x + w > width and x > 0:
-                x = 0
+            if x - left + w > available and x > left:
+                x = left
                 y += row_height + self._vspacing
                 row_height = 0
 
@@ -183,4 +189,4 @@ class FlowLayout(QLayout):
             x += w + self._hspacing
             row_height = max(row_height, h)
 
-        return y + row_height
+        return y + row_height + margins.bottom()
