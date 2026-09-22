@@ -2157,6 +2157,289 @@ def qt_can_write_the_artwork_formats() -> None:
 
 
 # --------------------------------------------------------------------------
+# friends
+# --------------------------------------------------------------------------
+
+
+@contextmanager
+def friends_server():
+    """A friends server on a free port, with an in-memory database."""
+    import threading
+
+    from server.api import make_server
+    from server.db import Store
+
+    store = Store(":memory:")
+    server = make_server(store, "127.0.0.1", 0, quiet=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        store.close()
+
+
+def _friends_pair(url: str):
+    """Two registered users who are friends: (ana, bo) clients."""
+    from launcher.services.friends_client import FriendsClient
+
+    ana = FriendsClient(url)
+    ana.token = ana.register("Ana")["token"]
+    bo = FriendsClient(url)
+    bo_profile = bo.register("Bo")
+    bo.token = bo_profile["token"]
+    ana.send_request(bo_profile["friend_code"].lower().replace("-", " "))
+    incoming = bo.requests()["incoming"]
+    assert [r["display_name"] for r in incoming] == ["Ana"], incoming
+    bo.answer(incoming[0]["id"], True)
+    return ana, bo
+
+
+@test
+def friends_game_key_matches_the_same_game() -> None:
+    from launcher.domain.friends import game_key
+    from launcher.domain.models import GameConfig
+
+    assert game_key(GameConfig(name="ELDEN RING")) == game_key(GameConfig(name="Elden Ring"))
+    assert game_key(GameConfig(name="Hades", game_id="1145360")) == "steam:1145360"
+    # An override beats the launch id; the placeholder id means nothing.
+    assert game_key(GameConfig(name="X", game_id="1", override_app_id="42")) == "steam:42"
+    assert game_key(GameConfig(name="X", game_id="480")).startswith("name:")
+
+
+@test
+def friends_server_friendship_presence_and_leaderboards() -> None:
+    import time as _time
+
+    with friends_server() as url:
+        ana, bo = _friends_pair(url)
+        now = int(_time.time())
+        long_ago = now - 60 * 86400
+        bo.upload_sessions(
+            [
+                {"id": "b:1", "game_key": "name:hades", "game_name": "Hades",
+                 "started": now - 100, "seconds": 3600},
+                {"id": "b:2", "game_key": "name:celeste", "game_name": "Celeste",
+                 "started": long_ago, "seconds": 7200},
+            ]
+        )
+        ana.upload_sessions(
+            [{"id": "a:1", "game_key": "name:hades", "game_name": "Hades",
+              "started": now - 50, "seconds": 600}]
+        )
+        bo.set_presence("name:hades", "Hades")
+
+        overview = ana.overview(now - 3600)
+        (friend,) = overview["friends"]
+        assert friend["display_name"] == "Bo"
+        assert friend["presence"]["game_name"] == "Hades"
+        assert friend["week_seconds"] == 3600
+        assert friend["total_seconds"] == 10800
+        assert [g["game_name"] for g in friend["top_games"]] == ["Celeste", "Hades"]
+        shared = {g["game_key"]: g["players"] for g in overview["games"]}
+        assert shared == {"name:hades": 2, "name:celeste": 1}, shared
+
+        week = ana.leaderboard(now - 3600, None)
+        assert [(r["display_name"], r["rank"]) for r in week] == [("Bo", 1), ("Ana", 2)]
+        assert [r["is_me"] for r in week] == [False, True]
+        all_time = ana.leaderboard(None, None)
+        assert all_time[0]["seconds"] == 10800
+        # Per game: only people who played it.
+        celeste = ana.leaderboard(None, "name:celeste")
+        assert [r["display_name"] for r in celeste] == ["Bo"]
+
+        bo.clear_presence()
+        assert ana.overview(None)["friends"][0]["presence"] is None
+
+
+@test
+def friends_server_shows_strangers_nothing() -> None:
+    from launcher.services.friends_client import AuthError, FriendsClient
+
+    with friends_server() as url:
+        ana, bo = _friends_pair(url)
+        eve = FriendsClient(url)
+        eve.token = eve.register("Eve")["token"]
+        bo.upload_sessions(
+            [{"id": "b:1", "game_key": "k", "game_name": "G", "started": 1, "seconds": 60}]
+        )
+        assert eve.overview(None)["friends"] == []
+        assert [r["display_name"] for r in eve.leaderboard(None, None)] == ["Eve"]
+        # Unfriending hides each from the other.
+        ana.unfriend(bo.me()["user_id"])
+        assert ana.overview(None)["friends"] == []
+        assert bo.overview(None)["friends"] == []
+        # A request to a code that does not exist looks like any other.
+        eve.send_request("ZZZZ-ZZZZ")
+        try:
+            FriendsClient(url, "not-a-token").overview(None)
+        except AuthError:
+            pass
+        else:
+            raise AssertionError("a bad token was accepted")
+
+
+@test
+def friends_uploads_are_idempotent_and_clearable() -> None:
+    with friends_server() as url:
+        ana, _bo = _friends_pair(url)
+        batch = [
+            {"id": "a:1", "game_key": "k1", "game_name": "One", "started": 1, "seconds": 60},
+            {"id": "a:2", "game_key": "k2", "game_name": "Two", "started": 2, "seconds": 30},
+        ]
+        ana.upload_sessions(batch)
+        ana.upload_sessions(batch)
+        assert ana.overview(None)["me"]["total_seconds"] == 90
+        ana.delete_sessions(["k1"])
+        assert ana.overview(None)["me"]["total_seconds"] == 30
+        ana.delete_sessions(None)
+        assert ana.overview(None)["me"]["total_seconds"] == 0
+
+
+@test
+def friends_offline_mode_makes_no_calls() -> None:
+    from launcher.domain.friends import FriendsState
+
+    made: list[str] = []
+    with sandbox() as ctx:
+        service = ctx.friends
+        service._client_factory = lambda url, token: made.append(url)  # type: ignore[assignment]
+        assert ctx.settings.get_str("friends_mode") == "offline"
+        service.start()
+        ctx.state.record_session("Game", datetime.now(), 120)
+        ctx.processes.game_started.emit("Game")
+        ctx.processes.session_recorded.emit("Game", 120)
+        service.refresh()
+        service.sync_history()
+        pump(lambda: False, timeout=0.2)
+        assert made == [], made
+        assert service.state is FriendsState.OFFLINE
+        assert not ctx.paths.friends_file.exists()
+
+
+@test
+def friends_service_registers_uploads_and_shares_presence() -> None:
+    from launcher.domain.friends import FriendsState, name_key
+    from launcher.services.friends_client import FriendsClient
+
+    with friends_server() as url, sandbox() as ctx:
+        # History from before going online is uploaded too.
+        ctx.state.record_session("Hades", datetime.now() - timedelta(days=40), 3600)
+        ctx.settings.update({"friends_mode": "online", "friends_server_url": url})
+        service = ctx.friends
+        service.start()
+        assert service.state is FriendsState.UNREGISTERED
+        service.register("  Ana  ")
+        pump(lambda: service.state is FriendsState.ONLINE)
+        assert service.state is FriendsState.ONLINE, service.state
+        assert service.account.display_name == "Ana"
+        assert ctx.paths.friends_file.stat().st_mode & 0o077 == 0, "token file is readable"
+
+        pump(lambda: service.account.uploaded_through > 0)
+        bo = FriendsClient(url)
+        bo_profile = bo.register("Bo")
+        bo.token = bo_profile["token"]
+        bo.send_request(service.account.friend_code)
+        service.refresh()
+        pump(lambda: service.snapshot is not None and bool(service.snapshot.incoming))
+        snap = service.snapshot
+        assert snap is not None and snap.me.total_seconds == 3600, snap
+        service.answer(snap.incoming[0].id, True)
+        pump(lambda: service.snapshot is not None and bool(service.snapshot.friends))
+
+        # Presence: a game running from the launcher shows up for Bo.
+        ctx.processes._sessions["Hades"] = object()  # type: ignore[assignment]
+        ctx.processes.game_started.emit("Hades")
+        playing: list = []
+
+        def bo_sees_it() -> bool:
+            playing[:] = [f["presence"] for f in bo.overview(None)["friends"]]
+            return playing[0] is not None
+
+        pump(bo_sees_it, timeout=3)
+        assert playing[0]["game_key"] == name_key("Hades"), playing
+
+        # Turning sharing off clears it.
+        ctx.settings.set("friends_share_presence", False)
+        pump(lambda: not bo_sees_it(), timeout=3)
+        assert playing[0] is None
+        ctx.processes._sessions.clear()
+
+        # A local history clear reaches the server.
+        from launcher.app import data_cleaner
+
+        data_cleaner.clear(ctx, ["Hades"], {data_cleaner.DataKind.HISTORY})
+        pump(lambda: bo.overview(None)["friends"][0]["total_seconds"] == 0, timeout=3)
+        assert bo.overview(None)["friends"][0]["total_seconds"] == 0
+
+        # Going offline stops everything.
+        ctx.settings.set("friends_mode", "offline")
+        assert service.state is FriendsState.OFFLINE
+        assert not service._poll.isActive()
+
+
+@test
+def friends_service_survives_an_unreachable_server() -> None:
+    from launcher.domain.friends import FriendsState
+    from launcher.services.friends import Account
+
+    with sandbox() as ctx:
+        # A port nothing listens on.
+        url = "http://127.0.0.1:9"
+        ctx.friends._account = Account(server=url, token="t")  # noqa: S106
+        ctx.settings.update({"friends_mode": "online", "friends_server_url": url})
+        ctx.friends.start()
+        pump(lambda: ctx.friends.state is FriendsState.UNREACHABLE)
+        assert ctx.friends.state is FriendsState.UNREACHABLE
+        assert ctx.friends._poll.isActive(), "no retry scheduled"
+
+
+@test
+def friends_tab_is_a_view_and_remembered() -> None:
+    from launcher.app.main import build_window
+    from launcher.domain.friends import FriendsSnapshot
+    from launcher.ui.main_window import _FRIENDS_VIEW, _LIBRARY_VIEW
+
+    app = qt_app()
+    with sandbox() as ctx:
+        window = build_window(ctx)
+        window.show()
+        app.processEvents()
+        # Offline: the explainer, and no network.
+        assert window._friends._pages.currentIndex() == 0
+        window._switch_view(_FRIENDS_VIEW)
+        assert ctx.settings.get_str("view_mode") == "friends"
+        assert ctx.friends._visible
+        window._switch_view(_LIBRARY_VIEW)
+        window._switch_view(_FRIENDS_VIEW)
+        window._restore_view_mode()
+        assert window._views.currentIndex() == _FRIENDS_VIEW
+
+        # Drawing a full snapshot must not fail.
+        snap = FriendsSnapshot.parse(
+            {
+                "me": {"user_id": 1, "display_name": "Ana", "friend_code": "AAAA-BBBB"},
+                "friends": [
+                    {"user_id": 2, "display_name": "Bo", "last_seen": 1,
+                     "presence": {"game_key": "k", "game_name": "Hades", "since": 1},
+                     "week_seconds": 60, "total_seconds": 120,
+                     "top_games": [{"game_key": "k", "game_name": "Hades", "seconds": 120}]},
+                ],
+                "games": [{"game_key": "k", "game_name": "Hades", "players": 2}],
+            },
+            {"incoming": [{"id": 3, "display_name": "Cy"}], "outgoing": []},
+            [{"rank": 1, "user_id": 2, "display_name": "Bo", "seconds": 60}],
+        )
+        window._friends._render(snap)
+        window._friends._show_page(3)
+        window._friends.grab()
+        assert window._friends._requests_card.isVisibleTo(window._friends)
+        window.close()
+
+
+# --------------------------------------------------------------------------
 
 
 def main() -> int:

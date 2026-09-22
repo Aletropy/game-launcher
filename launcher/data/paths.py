@@ -104,6 +104,11 @@ class Paths:
         return self.config / "favorites.json"
 
     @property
+    def friends_file(self) -> Path:
+        """The friends server profile: its token, so kept private."""
+        return self.config / "friends.json"
+
+    @property
     def themes_dir(self) -> Path:
         """Themes the user made, one JSON file each."""
         return self.config / "themes"

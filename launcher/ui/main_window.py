@@ -41,15 +41,19 @@ from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.theme import notifier
 from launcher.ui.widgets import log_view
 from launcher.ui.widgets.detail_panel import GameDetailPanel
+from launcher.ui.widgets.friends import FriendsView
 from launcher.ui.widgets.journal import JournalView
 from launcher.ui.widgets.sidebar import LibrarySidebar
 
 _LIBRARY_VIEW = 0
 _JOURNAL_VIEW = 1
+_FRIENDS_VIEW = 2
+#: The view_mode setting for each view.
+_VIEW_MODES = {_LIBRARY_VIEW: "library", _JOURNAL_VIEW: "journal", _FRIENDS_VIEW: "friends"}
 
 
 class MainWindow(QMainWindow):
-    """The library (sidebar and detail panel) and the play Journal."""
+    """The library (sidebar and detail panel), the play Journal and Friends."""
 
     def __init__(self, controller: LibraryController) -> None:
         super().__init__()
@@ -83,6 +87,7 @@ class MainWindow(QMainWindow):
         self._views = QStackedWidget()
         self._views.addWidget(self._build_library_view())
         self._views.addWidget(self._build_journal_view())
+        self._views.addWidget(self._build_friends_view())
         root.addWidget(self._views, stretch=1)
 
         self.setStatusBar(QStatusBar())
@@ -99,7 +104,11 @@ class MainWindow(QMainWindow):
 
         self._view_group = QButtonGroup(self)
         self._view_group.setExclusive(True)
-        for index, label in ((_LIBRARY_VIEW, "Library"), (_JOURNAL_VIEW, "Journal")):
+        for index, label in (
+            (_LIBRARY_VIEW, "Library"),
+            (_JOURNAL_VIEW, "Journal"),
+            (_FRIENDS_VIEW, "Friends"),
+        ):
             button = QPushButton(label)
             button.setObjectName("viewToggle")
             button.setCheckable(True)
@@ -168,6 +177,10 @@ class MainWindow(QMainWindow):
         self._journal = JournalView(self._ctx.artwork)
         return self._journal
 
+    def _build_friends_view(self) -> QWidget:
+        self._friends = FriendsView(self._ctx.friends, self._ctx.artwork)
+        return self._friends
+
     def _connect(self) -> None:
         lib = self._lib
         lib.library_changed.connect(self._render_library)
@@ -201,6 +214,9 @@ class MainWindow(QMainWindow):
         journal = self._journal
         journal.play_requested.connect(self._launch_game)
         journal.open_requested.connect(self._open_in_library)
+
+        self._friends.open_requested.connect(self._open_in_library)
+        self._friends.settings_requested.connect(self._open_settings)
 
         procs = self._ctx.processes
         procs.game_started.connect(self._on_game_started)
@@ -246,6 +262,7 @@ class MainWindow(QMainWindow):
         if not visible:
             self._detail.set_game(None)
         self._refresh_journal()
+        self._friends.set_local_games(self._lib.games)
 
     def _on_appearance_changed(self) -> None:
         """Repaint what draws itself; the stylesheet covers the rest."""
@@ -258,6 +275,7 @@ class MainWindow(QMainWindow):
         self._detail.refresh_artwork()
         self._journal.refresh_artwork()
         self._journal.viewport().update()
+        self._friends.refresh_artwork()
 
     def _refresh_journal(self) -> None:
         """Rebuild the Journal from every game, not just the filtered ones."""
@@ -300,19 +318,22 @@ class MainWindow(QMainWindow):
         button = self._view_group.button(index)
         if button is not None and not button.isChecked():
             button.setChecked(True)
-        self._ctx.settings.set(
-            "view_mode", "journal" if index == _JOURNAL_VIEW else "library"
-        )
+        self._ctx.settings.set("view_mode", _VIEW_MODES.get(index, "library"))
+        # Friends poll more often while someone is looking.
+        self._ctx.friends.set_visible(index == _FRIENDS_VIEW)
 
     def _restore_view_mode(self) -> None:
         # "grid" is what the removed card grid was saved as; the Journal
         # took its place, so open that for anyone who preferred it.
         mode = self._ctx.settings.get_str("view_mode")
-        index = _JOURNAL_VIEW if mode in ("journal", "grid") else _LIBRARY_VIEW
+        if mode == "grid":
+            mode = "journal"
+        index = next((i for i, m in _VIEW_MODES.items() if m == mode), _LIBRARY_VIEW)
         button = self._view_group.button(index)
         if button is not None:
             button.setChecked(True)
         self._views.setCurrentIndex(index)
+        self._ctx.friends.set_visible(index == _FRIENDS_VIEW)
 
     def _open_in_library(self, name: str) -> None:
         """Jump from the Journal to a game's page in the library."""

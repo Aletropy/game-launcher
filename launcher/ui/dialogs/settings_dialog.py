@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, Signal
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSpinBox,
     QStackedWidget,
@@ -31,7 +33,10 @@ from launcher.data.settings_store import DEFAULTS
 from launcher.domain import prefixes
 from launcher.domain.backup_policy import DEFAULT_EXCLUDES
 from launcher.domain.journal import format_duration
+from launcher.services.friends import SERVER_ENV
+from launcher.services.friends_client import FriendsClient
 from launcher.services.tasks import TaskGroup
+from launcher.ui.dialogs.confirm import Answer, ask
 from launcher.ui.theme import Appearance, apply_theme
 from launcher.ui.theme.custom import CustomThemeStore
 from launcher.ui.widgets.appearance_picker import AppearancePanel
@@ -49,6 +54,7 @@ _PAGES = (
     ("artwork", "Artwork", "Where artwork comes from and what it costs on disk."),
     ("saves", "Saves & backups", "One set of saves for every prefix, kept safe."),
     ("data", "Data", "What the launcher has recorded, and clearing it."),
+    ("friends", "Friends", "Share play time with friends, or stay offline."),
     ("prompts", "Prompts", "Questions you asked not to be asked again."),
     ("about", "About", "Version and where everything lives."),
 )
@@ -108,6 +114,9 @@ class SettingsDialog(QDialog):
         self._tasks.finished.connect(lambda _t, r: self._show_key_result(str(r)))
         self._tasks.failed.connect(lambda _t, m: self._show_key_result(m))
         self._verify_token = -1
+        self._friends_tasks = TaskGroup(self)
+        self._friends_tasks.finished.connect(lambda _t, r: self._show_server_result(str(r)))
+        self._friends_tasks.failed.connect(lambda _t, m: self._show_server_result(m))
         #: Put back on Cancel; changes preview live while the dialog is open.
         self._original_look = Appearance.from_settings(context.settings)
 
@@ -139,6 +148,7 @@ class SettingsDialog(QDialog):
             "artwork": self._build_artwork,
             "saves": self._build_saves,
             "data": self._build_data,
+            "friends": self._build_friends,
             "prompts": self._build_prompts,
             "about": self._build_about,
         }
@@ -347,6 +357,62 @@ class SettingsDialog(QDialog):
         recorded.form.addRow(self._button_row(button))
         return self._column(recorded)
 
+    def _build_friends(self) -> QWidget:
+        mode = _Card("Mode")
+        self._offline_radio = QRadioButton("Offline Mode")
+        self._online_radio = QRadioButton("Online: share play time with friends")
+        mode.form.addRow(self._offline_radio)
+        mode.form.addRow(
+            _hint("Nothing is sent or fetched. The Friends tab explains the feature and waits.")
+        )
+        mode.form.addRow(self._online_radio)
+        mode.form.addRow(
+            _hint(
+                "Friends you accept see your display name, which games you play and "
+                "for how long, and what you're playing now. No chat, no messages."
+            )
+        )
+        self._share_presence = QCheckBox("Show friends what I'm playing right now")
+        mode.form.addRow(self._share_presence)
+
+        server = _Card("Server")
+        server_row = QHBoxLayout()
+        self._server_url = QLineEdit()
+        self._server_url.setPlaceholderText(str(DEFAULTS["friends_server_url"]))
+        server_row.addWidget(self._server_url, stretch=1)
+        self._server_test = QPushButton("Test")
+        self._server_test.clicked.connect(self._test_server)
+        server_row.addWidget(self._server_test)
+        server.form.addRow("Address", server_row)
+        self._server_status = _hint("")
+        self._server_status.hide()
+        server.form.addRow(self._server_status)
+        override = os.environ.get(SERVER_ENV, "").strip()
+        if override:
+            server.form.addRow(_hint(f"{SERVER_ENV} is set, so {override} is used instead."))
+
+        profile = _Card("Profile")
+        account = self._ctx.friends.account
+        registered = self._ctx.friends.registered_here
+        self._display_name = QLineEdit()
+        self._display_name.setMaxLength(32)
+        self._display_name.setEnabled(registered)
+        profile.form.addRow("Display name", self._display_name)
+        code = QLabel(account.friend_code if registered else "No profile on this server yet")
+        code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        profile.form.addRow("Friend code", code)
+        self._delete_profile = QPushButton("Delete my friends profile…")
+        self._delete_profile.setObjectName("dangerButton")
+        self._delete_profile.setEnabled(account.registered)
+        self._delete_profile.clicked.connect(self._confirm_delete_profile)
+        self._profile_status = _hint(
+            "Removes your profile, friends and everything shared from the server, "
+            "and switches to Offline Mode. Your own library is not touched."
+        )
+        profile.form.addRow(self._button_row(self._delete_profile))
+        profile.form.addRow(self._profile_status)
+        return self._column(mode, server, profile)
+
     def _build_prompts(self) -> QWidget:
         card = _Card("Ask me again")
         card.form.addRow(_hint("Tick a prompt to start being asked again."))
@@ -397,6 +463,12 @@ class SettingsDialog(QDialog):
         self._keep_daily.setValue(settings.get_int("backup_keep_daily"))
         self._keep_weekly.setValue(settings.get_int("backup_keep_weekly"))
         self._exclude.setPlainText(settings.get_str("backup_exclude"))
+        online = settings.get_str("friends_mode") == "online"
+        self._online_radio.setChecked(online)
+        self._offline_radio.setChecked(not online)
+        self._share_presence.setChecked(settings.get_bool("friends_share_presence"))
+        self._server_url.setText(settings.get_str("friends_server_url"))
+        self._display_name.setText(self._ctx.friends.account.display_name)
         # These flags mean "silenced", so the checkbox is the inverse.
         for key, box in self._prompt_boxes.items():
             box.setChecked(not settings.get_bool(key))
@@ -414,11 +486,17 @@ class SettingsDialog(QDialog):
             "backup_keep_daily": self._keep_daily.value(),
             "backup_keep_weekly": self._keep_weekly.value(),
             "backup_exclude": self._exclude.toPlainText().strip(),
+            "friends_mode": "online" if self._online_radio.isChecked() else "offline",
+            "friends_server_url": self._server_url.text().strip()
+            or str(DEFAULTS["friends_server_url"]),
+            "friends_share_presence": self._share_presence.isChecked(),
         }
         for key, box in self._prompt_boxes.items():
             values[key] = not box.isChecked()
         values.update(self._appearance.appearance.to_settings())
         self._ctx.settings.update(values)
+        if self._display_name.isEnabled():
+            self._ctx.friends.rename(self._display_name.text())
         self.accept()
 
     def _preview_look(self, look: Appearance) -> None:
@@ -441,8 +519,52 @@ class SettingsDialog(QDialog):
         self._verify_btn.setEnabled(True)
         self._key_status.setText(message)
 
+    # -- friends -------------------------------------------------------
+
+    def _test_server(self) -> None:
+        url = self._server_url.text().strip() or str(DEFAULTS["friends_server_url"])
+        try:
+            client = FriendsClient(url)
+        except ValueError as e:
+            self._server_status.setText(str(e))
+            self._server_status.show()
+            return
+        self._server_test.setEnabled(False)
+        self._server_status.setText("Checking…")
+        self._server_status.show()
+        self._friends_tasks.submit(client.ping)
+
+    def _show_server_result(self, message: str) -> None:
+        self._server_test.setEnabled(True)
+        self._server_status.setText(message)
+
+    def _confirm_delete_profile(self) -> None:
+        answer = ask(
+            self,
+            "Delete Friends Profile",
+            "Delete your friends profile?\n\nYour friends, requests and the play "
+            "time you shared are removed from the server, and the launcher goes "
+            "back to Offline Mode. This can't be undone.",
+            default=Answer.NO,
+        )
+        if answer is not Answer.YES:
+            return
+        self._delete_profile.setEnabled(False)
+        self._profile_status.setText("Deleting…")
+        self._ctx.friends.delete_account(self._profile_deleted)
+
+    def _profile_deleted(self, ok: bool, message: str) -> None:
+        self._profile_status.setText(message)
+        if ok:
+            self._offline_radio.setChecked(True)
+            self._display_name.clear()
+            self._display_name.setEnabled(False)
+        else:
+            self._delete_profile.setEnabled(True)
+
     def reject(self) -> None:
         self._tasks.cancel_all()
+        self._friends_tasks.cancel_all()
         if self._appearance.appearance != self._original_look:
             self._preview_look(self._original_look)
         super().reject()

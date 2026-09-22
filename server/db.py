@@ -1,0 +1,443 @@
+"""Storage for the friends server.
+
+One SQLite connection shared by every request thread, behind a lock: the
+traffic is a handful of launchers polling every half minute, and one
+writer at a time is what SQLite wants anyway.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import secrets
+import sqlite3
+import threading
+import time
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name  TEXT NOT NULL,
+    friend_code   TEXT NOT NULL UNIQUE,
+    token_hash    TEXT NOT NULL UNIQUE,
+    created       INTEGER NOT NULL,
+    last_seen     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS friend_requests (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_user  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    to_user    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created    INTEGER NOT NULL,
+    UNIQUE (from_user, to_user)
+);
+
+-- One row per pair, smaller id first.
+CREATE TABLE IF NOT EXISTS friendships (
+    user_a  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_b  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    since   INTEGER NOT NULL,
+    PRIMARY KEY (user_a, user_b),
+    CHECK (user_a < user_b)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    user_id            INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_session_id  TEXT NOT NULL,
+    game_key           TEXT NOT NULL,
+    game_name          TEXT NOT NULL,
+    started            INTEGER NOT NULL,
+    seconds            INTEGER NOT NULL,
+    PRIMARY KEY (user_id, client_session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_started ON sessions(user_id, started);
+CREATE INDEX IF NOT EXISTS idx_sessions_game ON sessions(game_key);
+
+CREATE TABLE IF NOT EXISTS presence (
+    user_id    INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    game_key   TEXT NOT NULL,
+    game_name  TEXT NOT NULL,
+    since      INTEGER NOT NULL,
+    expires    INTEGER NOT NULL
+);
+"""
+
+_USER_VERSION = 1
+
+#: Presence outlives its last heartbeat by this long; launchers beat
+#: every minute, so a crashed launcher drops off within a few.
+PRESENCE_TTL = 150
+#: No codes that read alike: no 0/O, 1/I/L.
+_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+#: Pending requests one user may have out at once.
+MAX_OUTGOING = 50
+TOP_GAMES = 5
+
+
+class NotFoundError(Exception):
+    """The thing asked for does not exist, or is not the caller's."""
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def normalise_code(raw: str) -> str:
+    """'k7qx 29mb' -> 'K7QX-29MB'. Anything else comes back unchanged."""
+    letters = "".join(ch for ch in raw.upper() if ch.isalnum())
+    if len(letters) != 8:
+        return raw.strip().upper()
+    return f"{letters[:4]}-{letters[4:]}"
+
+
+def _new_code() -> str:
+    letters = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(8))
+    return f"{letters[:4]}-{letters[4:]}"
+
+
+@dataclass(frozen=True)
+class User:
+    id: int
+    display_name: str
+    friend_code: str
+
+
+@dataclass(frozen=True)
+class SessionIn:
+    """One uploaded session, already validated."""
+
+    client_session_id: str
+    game_key: str
+    game_name: str
+    started: int
+    seconds: int
+
+
+class Store:
+    """Every read and write the API makes."""
+
+    def __init__(self, path: Path | str) -> None:
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.executescript(_SCHEMA)
+        version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < _USER_VERSION:
+            self._conn.execute(f"PRAGMA user_version = {_USER_VERSION}")
+        self._conn.commit()
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    # -- accounts --------------------------------------------------------
+
+    def register(self, display_name: str) -> tuple[User, str]:
+        """A new user and the token that proves it. The token is not kept."""
+        token = secrets.token_urlsafe(32)
+        now = int(time.time())
+        with self._lock:
+            while True:
+                code = _new_code()
+                try:
+                    cursor = self._conn.execute(
+                        "INSERT INTO users"
+                        " (display_name, friend_code, token_hash, created, last_seen)"
+                        " VALUES (?, ?, ?, ?, ?)",
+                        (display_name, code, hash_token(token), now, now),
+                    )
+                except sqlite3.IntegrityError:
+                    continue  # A code collision; draw again.
+                break
+            self._conn.commit()
+        assert cursor.lastrowid is not None
+        return User(cursor.lastrowid, display_name, code), token
+
+    def authenticate(self, token: str) -> User | None:
+        now = int(time.time())
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, display_name, friend_code FROM users WHERE token_hash = ?",
+                (hash_token(token),),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, row["id"]))
+            self._conn.commit()
+        return User(row["id"], row["display_name"], row["friend_code"])
+
+    def rename(self, user_id: int, display_name: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id)
+            )
+            self._conn.commit()
+
+    def delete_user(self, user_id: int) -> None:
+        """Remove a user and, through the cascades, everything of theirs."""
+        with self._lock:
+            self._conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            self._conn.commit()
+
+    # -- friendships -----------------------------------------------------
+
+    def _are_friends(self, a: int, b: int) -> bool:
+        low, high = sorted((a, b))
+        row = self._conn.execute(
+            "SELECT 1 FROM friendships WHERE user_a = ? AND user_b = ?", (low, high)
+        ).fetchone()
+        return row is not None
+
+    def _befriend(self, a: int, b: int) -> None:
+        low, high = sorted((a, b))
+        self._conn.execute(
+            "INSERT OR IGNORE INTO friendships (user_a, user_b, since) VALUES (?, ?, ?)",
+            (low, high, int(time.time())),
+        )
+        self._conn.execute(
+            "DELETE FROM friend_requests WHERE (from_user = ? AND to_user = ?)"
+            " OR (from_user = ? AND to_user = ?)",
+            (a, b, b, a),
+        )
+
+    def send_request(self, from_user: int, code: str) -> None:
+        """Ask someone to be friends. Silent about whether the code exists.
+
+        A request the other way round already waiting counts as their
+        answer, so two people adding each other become friends at once.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM users WHERE friend_code = ?", (normalise_code(code),)
+            ).fetchone()
+            if row is None or row["id"] == from_user:
+                return
+            to_user = row["id"]
+            if self._are_friends(from_user, to_user):
+                return
+            reverse = self._conn.execute(
+                "SELECT 1 FROM friend_requests WHERE from_user = ? AND to_user = ?",
+                (to_user, from_user),
+            ).fetchone()
+            if reverse is not None:
+                self._befriend(from_user, to_user)
+            else:
+                outgoing = self._conn.execute(
+                    "SELECT COUNT(*) FROM friend_requests WHERE from_user = ?", (from_user,)
+                ).fetchone()[0]
+                if outgoing >= MAX_OUTGOING:
+                    return
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO friend_requests (from_user, to_user, created)"
+                    " VALUES (?, ?, ?)",
+                    (from_user, to_user, int(time.time())),
+                )
+            self._conn.commit()
+
+    def requests(self, user_id: int) -> dict[str, list[dict[str, Any]]]:
+        with self._lock:
+            incoming = self._conn.execute(
+                "SELECT r.id, r.created, u.display_name FROM friend_requests r"
+                " JOIN users u ON u.id = r.from_user WHERE r.to_user = ?"
+                " ORDER BY r.created",
+                (user_id,),
+            ).fetchall()
+            outgoing = self._conn.execute(
+                "SELECT r.id, r.created, u.display_name FROM friend_requests r"
+                " JOIN users u ON u.id = r.to_user WHERE r.from_user = ?"
+                " ORDER BY r.created",
+                (user_id,),
+            ).fetchall()
+        return {
+            "incoming": [dict(row) for row in incoming],
+            "outgoing": [dict(row) for row in outgoing],
+        }
+
+    def answer_request(self, user_id: int, request_id: int, *, accept: bool) -> None:
+        """Accept or decline a request made to this user."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT from_user FROM friend_requests WHERE id = ? AND to_user = ?",
+                (request_id, user_id),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError
+            if accept:
+                self._befriend(user_id, row["from_user"])
+            else:
+                self._conn.execute("DELETE FROM friend_requests WHERE id = ?", (request_id,))
+            self._conn.commit()
+
+    def cancel_request(self, user_id: int, request_id: int) -> None:
+        """Withdraw a request this user sent."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM friend_requests WHERE id = ? AND from_user = ?",
+                (request_id, user_id),
+            )
+            self._conn.commit()
+        if not cursor.rowcount:
+            raise NotFoundError
+
+    def unfriend(self, user_id: int, other: int) -> None:
+        low, high = sorted((user_id, other))
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM friendships WHERE user_a = ? AND user_b = ?", (low, high)
+            )
+            self._conn.commit()
+        if not cursor.rowcount:
+            raise NotFoundError
+
+    def _friend_ids(self, user_id: int) -> list[int]:
+        rows = self._conn.execute(
+            "SELECT user_b AS id FROM friendships WHERE user_a = ?"
+            " UNION SELECT user_a FROM friendships WHERE user_b = ?",
+            (user_id, user_id),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    # -- presence --------------------------------------------------------
+
+    def set_presence(self, user_id: int, game_key: str, game_name: str) -> None:
+        """Say a user is playing. Keeps the start time across heartbeats."""
+        now = int(time.time())
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT game_key, since, expires FROM presence WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            same = row is not None and row["game_key"] == game_key and row["expires"] > now
+            since = row["since"] if same else now
+            self._conn.execute(
+                "INSERT OR REPLACE INTO presence"
+                " (user_id, game_key, game_name, since, expires) VALUES (?, ?, ?, ?, ?)",
+                (user_id, game_key, game_name, since, now + PRESENCE_TTL),
+            )
+            self._conn.commit()
+
+    def clear_presence(self, user_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM presence WHERE user_id = ?", (user_id,))
+            self._conn.commit()
+
+    # -- sessions --------------------------------------------------------
+
+    def upsert_sessions(self, user_id: int, sessions: Iterable[SessionIn]) -> int:
+        rows = [
+            (user_id, s.client_session_id, s.game_key, s.game_name, s.started, s.seconds)
+            for s in sessions
+        ]
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO sessions"
+                " (user_id, client_session_id, game_key, game_name, started, seconds)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            self._conn.commit()
+        return len(rows)
+
+    def delete_sessions(self, user_id: int, game_keys: list[str] | None) -> int:
+        """Forget some games' history, or all of it when game_keys is None."""
+        with self._lock:
+            if game_keys is None:
+                cursor = self._conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            else:
+                cursor = self._conn.executemany(
+                    "DELETE FROM sessions WHERE user_id = ? AND game_key = ?",
+                    [(user_id, key) for key in game_keys],
+                )
+            self._conn.commit()
+        return cursor.rowcount
+
+    # -- what friends see -----------------------------------------------
+
+    def _seconds(self, user_id: int, since: int | None, game_key: str | None = None) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(seconds), 0) FROM sessions WHERE user_id = ?1"
+            " AND (?2 IS NULL OR started >= ?2) AND (?3 IS NULL OR game_key = ?3)",
+            (user_id, since, game_key),
+        ).fetchone()
+        return int(row[0])
+
+    def _top_games(self, user_id: int) -> list[dict[str, Any]]:
+        rows = self._conn.execute(
+            "SELECT game_key, MAX(game_name) AS game_name, SUM(seconds) AS seconds"
+            " FROM sessions WHERE user_id = ? GROUP BY game_key"
+            " ORDER BY seconds DESC LIMIT ?",
+            (user_id, TOP_GAMES),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _presence(self, user_id: int, now: int) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT game_key, game_name, since FROM presence"
+            " WHERE user_id = ? AND expires > ?",
+            (user_id, now),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _profile(self, user_id: int, since: int | None, now: int) -> dict[str, Any]:
+        row = self._conn.execute(
+            "SELECT id, display_name, last_seen FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        return {
+            "user_id": row["id"],
+            "display_name": row["display_name"],
+            "last_seen": row["last_seen"],
+            "presence": self._presence(user_id, now),
+            "week_seconds": self._seconds(user_id, since) if since is not None else 0,
+            "total_seconds": self._seconds(user_id, None),
+            "top_games": self._top_games(user_id),
+        }
+
+    def overview(self, user: User, since: int | None) -> dict[str, Any]:
+        """The caller and each of their friends, and the games among them."""
+        now = int(time.time())
+        with self._lock:
+            ids = self._friend_ids(user.id)
+            friends = [self._profile(i, since, now) for i in ids]
+            me = self._profile(user.id, since, now)
+            circle = [user.id, *ids]
+            marks = ",".join("?" * len(circle))
+            games = self._conn.execute(
+                "SELECT game_key, MAX(game_name) AS game_name,"  # noqa: S608 - placeholders only
+                " COUNT(DISTINCT user_id) AS players FROM sessions"
+                f" WHERE user_id IN ({marks}) GROUP BY game_key"
+                " ORDER BY players DESC, game_name",
+                circle,
+            ).fetchall()
+        me["friend_code"] = user.friend_code
+        friends.sort(key=lambda f: (f["presence"] is None, -f["week_seconds"]))
+        return {"me": me, "friends": friends, "games": [dict(row) for row in games]}
+
+    def leaderboard(
+        self, user: User, since: int | None, game_key: str | None
+    ) -> list[dict[str, Any]]:
+        """The caller and their friends, most played first."""
+        with self._lock:
+            circle = [user.id, *self._friend_ids(user.id)]
+            rows = []
+            for member in circle:
+                name = self._conn.execute(
+                    "SELECT display_name FROM users WHERE id = ?", (member,)
+                ).fetchone()["display_name"]
+                rows.append(
+                    {
+                        "user_id": member,
+                        "display_name": name,
+                        "seconds": self._seconds(member, since, game_key),
+                        "is_me": member == user.id,
+                    }
+                )
+        if game_key is not None:
+            # A game ranking lists who plays it, not everyone at zero.
+            rows = [r for r in rows if r["seconds"] > 0]
+        rows.sort(key=lambda r: (-r["seconds"], r["display_name"].lower()))
+        for rank, row in enumerate(rows, start=1):
+            row["rank"] = rank
+        return rows

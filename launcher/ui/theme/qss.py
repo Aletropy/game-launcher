@@ -16,7 +16,8 @@ QMainWindow, QDialog {
     background-color: $bg;
 }
 
-QWidget#libraryPage, QWidget#journalBody, QScrollArea#journal {
+QWidget#libraryPage, QWidget#journalBody, QScrollArea#journal,
+QWidget#friendsBody, QScrollArea#friends {
     background-color: $bg;
 }
 
@@ -487,6 +488,44 @@ QLabel#statValue {
     color: $fg_bright;
     font-size: ${font_stat}px;
     font-weight: bold;
+}
+
+QLabel#friendName {
+    color: $fg_bright;
+    font-size: ${font_lg}px;
+    font-weight: bold;
+}
+
+QLabel#friendsBanner {
+    background-color: $surface;
+    color: $favorite;
+    border: 1px solid $favorite;
+    border-radius: ${radius}px;
+    padding: 8px 12px;
+}
+
+QLabel#friendsNotice {
+    background-color: $surface;
+    color: $fg;
+    border: 1px solid $border;
+    border-radius: ${radius}px;
+    padding: 8px 12px;
+}
+
+QToolButton#friendMenu {
+    background: transparent;
+    border: none;
+    color: $fg_muted;
+    padding: 0 6px;
+    font-size: ${font_lg}px;
+}
+
+QToolButton#friendMenu:hover {
+    color: $fg_bright;
+}
+
+QToolButton#friendMenu::menu-indicator {
+    image: none;
 }
 
 QScrollArea#shelf, QScrollArea#shelf > QWidget > QWidget {

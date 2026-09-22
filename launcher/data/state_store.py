@@ -227,6 +227,33 @@ class StateStore:
             )
         return sessions
 
+    def sessions_after(self, last_id: int, limit: int) -> list[tuple[int, Session]]:
+        """Sessions recorded after a row id, oldest first, with their ids.
+
+        For uploading history in order: the largest id sent is the cursor.
+        """
+        rows = self._conn.execute(
+            "SELECT id, name, started, seconds, imported FROM sessions"
+            " WHERE id > ? ORDER BY id LIMIT ?",
+            (int(last_id), int(limit)),
+        ).fetchall()
+        found: list[tuple[int, Session]] = []
+        for row in rows:
+            started = _from_iso(row["started"])
+            if started is None:
+                continue
+            found.append(
+                (
+                    int(row["id"]),
+                    Session(row["name"], started, int(row["seconds"]), bool(row["imported"])),
+                )
+            )
+        return found
+
+    def last_session_id(self) -> int:
+        row = self._conn.execute("SELECT COALESCE(MAX(id), 0) FROM sessions").fetchone()
+        return int(row[0])
+
     def prune(self, known: set[str]) -> int:
         """Drop rows for games that no longer exist. Returns how many."""
         rows = self._conn.execute("SELECT name FROM game_state").fetchall()

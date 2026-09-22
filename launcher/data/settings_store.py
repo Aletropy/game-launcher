@@ -43,6 +43,10 @@ DEFAULTS: dict[str, Any] = {
     "backup_keep_weekly": 4,
     # Extra backup exclusions, one pattern per line.
     "backup_exclude": "",
+    # Friends. Offline Mode sends and fetches nothing.
+    "friends_mode": "offline",
+    "friends_server_url": "http://10.0.0.25:8765",
+    "friends_share_presence": True,
     # Where the Browse button starts when picking a game.
     "last_game_folder": "",
     "last_import_folder": "",

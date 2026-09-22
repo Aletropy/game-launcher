@@ -16,6 +16,7 @@ from launcher.data.settings_store import SettingsStore
 from launcher.data.state_store import StateStore
 from launcher.services.artwork import ArtworkCleaner, ArtworkService
 from launcher.services.backups import BackupService
+from launcher.services.friends import FriendsService
 from launcher.services.prefix_tools import PrefixToolsService
 from launcher.services.process import ProcessService
 from launcher.services.save_store import SaveStore
@@ -37,6 +38,7 @@ class AppContext:
     backups: BackupService
     prefix_tools: PrefixToolsService
     sgdb: SgdbClient
+    friends: FriendsService
 
     @classmethod
     def create(cls, paths: Paths | None = None) -> AppContext:
@@ -54,18 +56,22 @@ class AppContext:
         # Earlier versions saved covers into the banner folder; move them
         # to where they belong before anything draws them.
         artwork.reclassify_misfiled()
+        games = GameRepository(paths, state)
+        processes = ProcessService(paths)
         return cls(
             paths=paths,
             settings=settings,
             state=state,
-            games=GameRepository(paths, state),
+            games=games,
             artwork=artwork,
             cleaner=ArtworkCleaner(artwork),
-            processes=ProcessService(paths),
+            processes=processes,
             save_store=SaveStore(paths),
             backups=BackupService(paths),
             prefix_tools=PrefixToolsService(paths),
             sgdb=SgdbClient(settings),
+            # Idle until start(); Offline Mode keeps it that way.
+            friends=FriendsService(paths, settings, state, games, processes),
         )
 
     @classmethod
@@ -80,5 +86,6 @@ class AppContext:
         closing the launcher should not interrupt a winetricks session
         part way through changing a prefix.
         """
+        self.friends.stop()
         self.processes.stop_all()
         self.state.close()

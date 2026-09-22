@@ -70,11 +70,6 @@ def _section(title: str) -> QLabel:
     return label
 
 
-# --------------------------------------------------------------------------
-# pieces
-# --------------------------------------------------------------------------
-
-
 class StatTile(QFrame):
     """One headline number with a caption."""
 
@@ -391,11 +386,6 @@ class TopGames(QWidget):
                 int(Qt.AlignmentFlag.AlignVCenter),
                 journal.format_duration(seconds),
             )
-
-
-# --------------------------------------------------------------------------
-# the view
-# --------------------------------------------------------------------------
 
 
 class JournalView(QScrollArea):

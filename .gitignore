@@ -34,3 +34,6 @@ __pycache__/
 # The shared save store is your data
 /Saves/
 /.rehearsal/
+
+# The friends server's database, when run from the checkout
+/friends-server.db*

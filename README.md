@@ -8,11 +8,11 @@ Steam Flatpak container.
 One file, run once:
 
 ```bash
-./game-launcher-2.0.0.run             # install, or upgrade in place
-./game-launcher-2.0.0.run --target DIR
-./game-launcher-2.0.0.run --yes       # no questions
-./game-launcher-2.0.0.run --check     # dependencies only, changes nothing
-./game-launcher-2.0.0.run --extract DIR
+./game-launcher-2.1.0.run             # install, or upgrade in place
+./game-launcher-2.1.0.run --target DIR
+./game-launcher-2.1.0.run --yes       # no questions
+./game-launcher-2.1.0.run --check     # dependencies only, changes nothing
+./game-launcher-2.1.0.run --extract DIR
 ```
 
 It verifies its own payload, unpacks itself, finds an existing
@@ -104,8 +104,8 @@ byte-identical.
 To install elsewhere:
 
 ```bash
-tar xzf game-launcher-2.0.0.tar.gz
-cd game-launcher-2.0.0
+tar xzf game-launcher-2.1.0.tar.gz
+cd game-launcher-2.1.0
 ./install.sh
 ```
 
@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory() as d:
     ctx = AppContext.for_testing(Path(d))
 ```
 
-`tests/smoke.py` is a dependency-free suite (77 tests) covering the
+`tests/smoke.py` is a dependency-free suite (85 tests) covering the
 domain, the repositories, the services, the shell script and headless UI
 construction:
 
@@ -377,6 +377,54 @@ what each reclaims, and nothing is deleted until you confirm. Re-encoding
 replaces the original.
 
 Removing a game deletes its artwork and recorded state with it.
+
+## Friends
+
+An opt-in tab that shows what friends are playing right now, the games
+they play most, and a leaderboard for this week, all time, or one game.
+There's no chat and nothing to reply to. The only thing you can do with
+another user is send or answer a friend request.
+
+**Offline Mode is the default.** In Offline Mode the launcher makes no
+network requests at all, and nothing outside the Friends tab changes
+between modes. To go online, open Settings → Friends, choose *Online*,
+then create a profile in the Friends tab. You get a friend code such as
+`K7QX-29MB` to share. Friends appear once they accept your request.
+
+Going online shares these with friends you have accepted:
+
+- your display name
+- your play history, including sessions recorded before you went online
+- the game you're playing now, if you allow it
+
+"Playing now" only covers games started from the launcher. When you clear
+play history under Settings → Data, it is cleared on the server too. If
+you are offline at the time, it is cleared the next time you connect.
+*Delete my friends profile* removes everything you shared.
+
+### The friends server
+
+The server is `server/`: standard-library Python and SQLite, with no
+dependencies. It is not included in release archives.
+
+```bash
+python -m server                          # 127.0.0.1:8765, ./friends-server.db
+python -m server --host 0.0.0.0           # reachable from other machines
+python -m server --port 9000 --db /srv/friends.db --quiet
+```
+
+Launchers connect to `http://10.0.0.25:8765` by default. For now that is
+the shared LAN server; you can change the address under Settings →
+Friends. To develop against a local server, set the address with an
+environment variable:
+
+```bash
+LAUNCHER_FRIENDS_SERVER=http://127.0.0.1:8765 ./run.sh
+```
+
+The server uses plain HTTP, so run it only on a network you trust.
+Tokens are stored hashed on the server, and in
+`~/.config/launcher/friends.json` (mode 0600) on each client.
 
 ## Per-game configuration
 

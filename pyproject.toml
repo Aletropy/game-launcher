@@ -1,6 +1,6 @@
 [project]
 name = "game-launcher"
-version = "2.0.0"
+version = "2.1.0"
 description = "A launcher for running Windows games through Proton"
 requires-python = ">=3.11"
 dependencies = ["PySide6>=6.6.0"]
@@ -26,8 +26,6 @@ ignore = [
     "PLR2004",
     # Asserts document internal invariants; this is not a security boundary.
     "S101",
-    # URLs come from the SteamGridDB API, not from user input.
-    "S310",
     # Some imports are deliberately local to break an import cycle or to
     # keep Qt out of a module's import time.
     "PLC0415",
@@ -37,6 +35,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# URLs come from the SteamGridDB API, not from user input.
+"launcher/services/sgdb.py" = ["S310"]
 # The test runner deliberately catches everything and asserts freely.
 "tests/*" = ["S101", "BLE001", "PLR2004", "S603", "S607", "PLW0603", "RUF015", "DTZ001"]
 

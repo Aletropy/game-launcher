@@ -81,6 +81,8 @@ def clear(
         report.snapshot = state.snapshot(context.paths.state_backups_dir)
     if DataKind.HISTORY in kinds:
         report.sessions = state.clear_sessions(names)
+        # Friends see totals built from history; clear it there too.
+        context.friends.forget_games(names)
     if DataKind.PLAYTIME in kinds:
         state.reset_playtime(names)
     if DataKind.LAUNCHES in kinds:
@@ -101,4 +103,5 @@ def forget_orphans(context: AppContext) -> ClearReport:
         report.snapshot = context.state.snapshot(context.paths.state_backups_dir)
         report.sessions = context.state.session_count(names)
         context.state.forget(names)
+        context.friends.forget_games(names)
     return report
