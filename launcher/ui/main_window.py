@@ -105,6 +105,12 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
+        self._saves_btn = QPushButton("Shared Saves…")
+        self._saves_btn.setFixedHeight(32)
+        self._saves_btn.setToolTip("One copy of your saves, linked into every prefix")
+        self._saves_btn.clicked.connect(self._open_saves)
+        layout.addWidget(self._saves_btn)
+
         cleanup_btn = QPushButton("Clean Up Artwork…")
         cleanup_btn.setFixedHeight(32)
         cleanup_btn.clicked.connect(self._clean_up_artwork)

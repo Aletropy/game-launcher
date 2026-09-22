@@ -1258,6 +1258,46 @@ def a_missing_prefix_reports_instead_of_failing_silently() -> None:
 
 
 @test
+def every_feature_dialog_is_reachable_from_the_window() -> None:
+    """Regression: the Shared Saves dialog shipped with no button.
+
+    The dialog and its handler existed, but the edit adding the toolbar
+    button silently matched nothing, and tests that built the dialog
+    directly could not notice. Click through the real window instead.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    from launcher.app.main import build_window
+    from launcher.ui.dialogs import saves_dialog
+
+    app = qt_app()
+    with sandbox() as ctx:
+        window = build_window(ctx)
+        window.show()
+        app.processEvents()
+
+        labels = {b.text() for b in window.findChildren(QPushButton)}
+        for wanted in ("Shared Saves\u2026", "Clean Up Artwork\u2026", "Settings\u2026"):
+            assert wanted in labels, f"no {wanted!r} button; found {sorted(labels)}"
+
+        opened: list[str] = []
+        original = saves_dialog.SavesDialog.exec
+        saves_dialog.SavesDialog.exec = lambda self: opened.append("saves") or 0
+        try:
+            button = next(
+                b for b in window.findChildren(QPushButton)
+                if b.text() == "Shared Saves\u2026"
+            )
+            button.click()
+            app.processEvents()
+        finally:
+            saves_dialog.SavesDialog.exec = original
+
+        assert opened == ["saves"], "clicking Shared Saves did not open it"
+        window.close()
+
+
+@test
 def dialogs_all_construct() -> None:
     from launcher.domain.models import GameConfig
     from launcher.ui.dialogs.game_dialog import AddGameDialog
