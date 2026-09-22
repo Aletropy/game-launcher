@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from launcher.app.context import AppContext
+from launcher.app.save_keeper import SaveKeeper
 from launcher.services.save_store import AdoptPlan, AdoptResult, SaveStore
 from launcher.ui.dialogs.confirm import Answer, ask, warn
 
@@ -93,9 +94,15 @@ class AdoptPreviewDialog(QDialog):
 class SavesDialog(QDialog):
     """Status of every prefix, and the actions that change it."""
 
-    def __init__(self, context: AppContext, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        context: AppContext,
+        keeper: SaveKeeper,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._ctx = context
+        self._keeper = keeper
         self._store: SaveStore = context.save_store
         self.setWindowTitle("Shared Saves")
         self.setMinimumSize(640, 460)
@@ -144,6 +151,15 @@ class SavesDialog(QDialog):
         actions.addWidget(self._release_btn)
 
         actions.addStretch()
+        self._share_all_btn = QPushButton("Share all")
+        self._share_all_btn.setToolTip(
+            "Bring every prefix that keeps its own saves into the store"
+        )
+        self._share_all_btn.clicked.connect(self._share_all)
+        actions.addWidget(self._share_all_btn)
+        backups_btn = QPushButton("Backups\u2026")
+        backups_btn.clicked.connect(self._open_backups)
+        actions.addWidget(backups_btn)
         open_btn = QPushButton("Open Saves folder")
         open_btn.clicked.connect(self._open_store)
         actions.addWidget(open_btn)
@@ -224,15 +240,41 @@ class SavesDialog(QDialog):
 
         self.setCursor(Qt.CursorShape.WaitCursor)
         try:
-            result = self._store.adopt(prefix)
+            result = self._keeper.share(prefix)
         finally:
             self.unsetCursor()
-        self._report(prefix, result)
+        if result is not None:
+            self._report(prefix, result)
         self.refresh()
+
+    def _share_all(self) -> None:
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            shared = self._keeper.share_everything()
+        finally:
+            self.unsetCursor()
+        if not shared:
+            warn(self, "Share All", "Every prefix already shares its saves.")
+        else:
+            lines = [
+                f"{p.name}: {r.moved_files} file(s) moved"
+                + (f", {r.conflict_count} conflict(s)" if r.conflict_count else "")
+                + (" \u2014 partly" if r.errors else "")
+                for p, r in shared
+            ]
+            warn(self, "Share All", "Now shared:\n" + "\n".join(lines))
+        self.refresh()
+
+    def _open_backups(self) -> None:
+        from launcher.ui.dialogs.backups_dialog import BackupsDialog
+
+        BackupsDialog(self._ctx, self._keeper, self).exec()
 
     def _repair(self) -> None:
         prefix = self._selected_prefix()
         if prefix is None:
+            return
+        if not self._keeper.safety_backup(f"before repairing {prefix.name}"):
             return
         result = self._store.repair(prefix)
         if result.errors:

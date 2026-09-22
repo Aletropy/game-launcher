@@ -48,5 +48,6 @@ def main() -> None:
     window.show()
     # After the window is up, so the prompt has something behind it.
     QTimer.singleShot(0, window.offer_artwork_cleanup)
+    QTimer.singleShot(0, window.share_saves_everywhere)
 
     sys.exit(app.exec())

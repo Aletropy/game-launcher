@@ -15,10 +15,10 @@ from launcher.data.paths import Paths
 from launcher.data.settings_store import SettingsStore
 from launcher.data.state_store import StateStore
 from launcher.services.artwork import ArtworkCleaner, ArtworkService
+from launcher.services.backups import BackupService
 from launcher.services.prefix_tools import PrefixToolsService
 from launcher.services.process import ProcessService
 from launcher.services.save_store import SaveStore
-from launcher.services.saves import SaveService
 from launcher.services.sgdb import SgdbClient
 
 
@@ -33,8 +33,8 @@ class AppContext:
     artwork: ArtworkService
     cleaner: ArtworkCleaner
     processes: ProcessService
-    saves: SaveService
     save_store: SaveStore
+    backups: BackupService
     prefix_tools: PrefixToolsService
     sgdb: SgdbClient
 
@@ -62,8 +62,8 @@ class AppContext:
             artwork=artwork,
             cleaner=ArtworkCleaner(artwork),
             processes=ProcessService(paths),
-            saves=SaveService(paths),
             save_store=SaveStore(paths),
+            backups=BackupService(paths),
             prefix_tools=PrefixToolsService(paths),
             sgdb=SgdbClient(settings),
         )

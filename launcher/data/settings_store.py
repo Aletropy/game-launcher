@@ -24,6 +24,15 @@ DEFAULTS: dict[str, Any] = {
     "close_to_tray": False,
     "log_max_lines": 5000,
     "fetch_artwork_on_add": True,
+    # Saves.
+    "share_saves_by_default": True,
+    "backup_auto": True,
+    "backup_interval_minutes": 30,
+    "backup_keep_recent": 5,
+    "backup_keep_daily": 7,
+    "backup_keep_weekly": 4,
+    # Extra backup exclusions, one pattern per line.
+    "backup_exclude": "",
     # Where the Browse button starts when picking a game.
     "last_game_folder": "",
     "last_import_folder": "",

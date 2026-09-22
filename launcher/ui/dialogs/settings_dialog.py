@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 from launcher.app.context import AppContext
 from launcher.data.settings_store import DEFAULTS
 from launcher.domain import prefixes
+from launcher.domain.backup_policy import DEFAULT_EXCLUDES
 from launcher.services.tasks import TaskGroup
 
 #: Prompts the user can silence, and how to describe re-enabling them.
@@ -52,6 +54,7 @@ class SettingsDialog(QDialog):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_general(), "General")
+        tabs.addTab(self._build_saves(), "Saves")
         tabs.addTab(self._build_artwork(), "Artwork")
         tabs.addTab(self._build_prompts(), "Prompts")
         layout.addWidget(tabs)
@@ -94,6 +97,60 @@ class SettingsDialog(QDialog):
         note.setObjectName("hintLabel")
         note.setWordWrap(True)
         form.addRow(note)
+        return page
+
+    def _build_saves(self) -> QWidget:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(12, 16, 12, 12)
+        form.setSpacing(10)
+
+        self._share_default = QCheckBox("Share every prefix's saves automatically")
+        self._share_default.setToolTip(
+            "New and existing prefixes join the shared Saves folder before "
+            "and after a game runs."
+        )
+        form.addRow(self._share_default)
+
+        self._backup_auto = QCheckBox("Back up saves after playing")
+        form.addRow(self._backup_auto)
+        self._backup_interval = QSpinBox()
+        self._backup_interval.setRange(0, 24 * 60)
+        self._backup_interval.setSingleStep(15)
+        self._backup_interval.setSuffix(" min")
+        self._backup_interval.setToolTip("0 backs up after every session")
+        form.addRow("At most every", self._backup_interval)
+
+        keep = QHBoxLayout()
+        self._keep_recent = QSpinBox()
+        self._keep_recent.setRange(1, 100)
+        self._keep_recent.setSuffix(" latest")
+        self._keep_daily = QSpinBox()
+        self._keep_daily.setRange(0, 60)
+        self._keep_daily.setSuffix(" days")
+        self._keep_weekly = QSpinBox()
+        self._keep_weekly.setRange(0, 52)
+        self._keep_weekly.setSuffix(" weeks")
+        for box in (self._keep_recent, self._keep_daily, self._keep_weekly):
+            keep.addWidget(box)
+        form.addRow("Keep", keep)
+        keep_hint = QLabel(
+            "Keeps the latest backups, then one per day and one per week "
+            "for as long as set. Manual backups are kept until deleted."
+        )
+        keep_hint.setObjectName("hintLabel")
+        keep_hint.setWordWrap(True)
+        form.addRow(keep_hint)
+
+        self._exclude = QPlainTextEdit()
+        self._exclude.setPlaceholderText(
+            "One folder per line, e.g.\nDocuments/Euro Truck Simulator 2/mod"
+        )
+        self._exclude.setFixedHeight(84)
+        self._exclude.setToolTip(
+            "Always left out: " + ", ".join(DEFAULT_EXCLUDES)
+        )
+        form.addRow("Also leave out", self._exclude)
         return page
 
     def _build_artwork(self) -> QWidget:
@@ -164,6 +221,13 @@ class SettingsDialog(QDialog):
         self._api_key.setText(settings.get_str("sgdb_api_key"))
         self._fetch_on_add.setChecked(settings.get_bool("fetch_artwork_on_add"))
         self._hide_missing.setChecked(settings.get_bool("hide_missing"))
+        self._share_default.setChecked(settings.get_bool("share_saves_by_default"))
+        self._backup_auto.setChecked(settings.get_bool("backup_auto"))
+        self._backup_interval.setValue(settings.get_int("backup_interval_minutes"))
+        self._keep_recent.setValue(settings.get_int("backup_keep_recent"))
+        self._keep_daily.setValue(settings.get_int("backup_keep_daily"))
+        self._keep_weekly.setValue(settings.get_int("backup_keep_weekly"))
+        self._exclude.setPlainText(settings.get_str("backup_exclude"))
         # These flags mean "silenced", so the checkbox is the inverse.
         for key, box in self._prompt_boxes.items():
             box.setChecked(not settings.get_bool(key))
@@ -175,6 +239,13 @@ class SettingsDialog(QDialog):
             "sgdb_api_key": self._api_key.text().strip(),
             "fetch_artwork_on_add": self._fetch_on_add.isChecked(),
             "hide_missing": self._hide_missing.isChecked(),
+            "share_saves_by_default": self._share_default.isChecked(),
+            "backup_auto": self._backup_auto.isChecked(),
+            "backup_interval_minutes": self._backup_interval.value(),
+            "backup_keep_recent": self._keep_recent.value(),
+            "backup_keep_daily": self._keep_daily.value(),
+            "backup_keep_weekly": self._keep_weekly.value(),
+            "backup_exclude": self._exclude.toPlainText().strip(),
         }
         for key, box in self._prompt_boxes.items():
             values[key] = not box.isChecked()

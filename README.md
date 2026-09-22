@@ -129,15 +129,18 @@ launcher/
     models.py    GameConfig, GameStats, Game, sorting and formatting
     config.py    reading and writing bash .conf files
     prefixes.py  prefix resolution, mirroring game-launcher.sh
+    journal.py   play sessions: heatmap, streaks, totals
+    backup_policy  what backups leave out and how long they are kept
   data/        persistence, each taking a Paths in its constructor
     paths.py         every filesystem location, as an object
     game_repository  games/*.conf
     settings_store   preferences (JSON)
-    state_store      playtime, favourites, last played (SQLite)
+    state_store      playtime, sessions, favourites (SQLite)
   services/    side effects
     artwork/     specs, store + display cache, cleanup
     process.py   launching games and timing sessions
-    saves.py     backing up and restoring save data
+    save_store.py  the shared Saves/ folder and the links into it
+    backups.py   incremental snapshots of Saves/, and restoring them
     prefix_tools winecfg / winetricks / open folder
     sgdb.py      SteamGridDB
     importer.py  finding games in a folder
@@ -145,6 +148,7 @@ launcher/
   app/         composition root and orchestration
     context.py           builds the object graph
     library_controller   library state and every mutation
+    save_keeper          automatic sharing and backups
     main.py              entry point
   ui/          views, which talk to the controller and nothing else
 ```
@@ -159,7 +163,7 @@ with tempfile.TemporaryDirectory() as d:
     ctx = AppContext.for_testing(Path(d))
 ```
 
-`tests/smoke.py` is a dependency-free suite (33 tests) covering the
+`tests/smoke.py` is a dependency-free suite (61 tests) covering the
 domain, the repositories, the services, the shell script and headless UI
 construction:
 
@@ -194,9 +198,15 @@ executables the largest is preferred. Review the list before importing.
 Settings) or by dragging an image onto the detail panel.
 
 **The ⋯ menu** on a selected game opens its prefix, runs winecfg or
-winetricks against it, and backs up or restores that game's saves.
-Backups land in `backups/<game>/<timestamp>` and copy the same
-directories `repair-prefix.sh` does.
+winetricks against it, and backs up saves or opens the backups at that
+game's own folder.
+
+**Journal**, the second view, is about time rather than games: a banner
+to continue the last game, total and weekly playtime, the current day
+streak, the longest session, a six-month activity heatmap (hover a day
+to see what was played), recently played covers and a most-played chart.
+Playtime recorded before sessions existed appears once, on the day each
+game was last played, marked as approximate.
 
 ## Shared saves
 
@@ -236,6 +246,12 @@ The links are therefore verified before every launch; anything written
 into a replacement is merged back into the store and the link restored.
 Launching `./game-launcher.sh` directly bypasses that check.
 
+**Every prefix is shared by default.** On startup, before a game starts
+and after it exits (a new prefix only exists after its first run), any
+prefix still keeping its own saves is merged into the store, with a
+backup taken first. Turn this off in Settings → Saves; **Share all** in
+the Shared Saves window does the same on demand.
+
 **Stop sharing** gives a prefix its own copy again. The store keeps its
 data, so this costs disk but never loses anything.
 
@@ -244,6 +260,42 @@ caches, anti-cheat and launcher installs are shared too — one Ubisoft
 login across prefixes, but also one corrupt `EasyAntiCheat` for
 everything. And rebuilding a prefix no longer clears bad state that
 lives in `AppData`.
+
+## Save backups
+
+Snapshots of `Saves/` go to `backups/saves/<timestamp>/data`, a plain
+copy you can browse without the launcher. They cost little:
+
+- A file unchanged since the previous snapshot is a hard link to that
+  snapshot's copy, so it takes no space.
+- A changed file is cloned (reflink) on btrfs and XFS, which also takes
+  no space until either copy changes; elsewhere it is copied.
+- Caches are left out: `dxvk`, `Temp`, `D3DSCache`, `Package Cache` and
+  any folder named `cache`, `shadercache` or similar. Add your own in
+  Settings → Saves, e.g. a mod folder.
+
+On this machine a first snapshot of 3.4 GB took 1.3 s and no extra disk,
+and the next one copied only the 2.5 KB that had changed. Before
+writing anything, a snapshot checks there will still be 512 MB free
+afterwards. Snapshots are never linked to the live files, so a game
+rewriting a save in place cannot reach into a backup.
+
+A snapshot is taken automatically:
+
+- after playing, at most every 30 minutes;
+- before sharing a prefix, repairing links, or restoring.
+
+Retention keeps the latest 5, then the newest per day for 7 days and per
+week for 4 weeks. Manual backups (**Back up now**) are kept until
+deleted, as is any snapshot marked **Keep forever**. All of it can be
+changed in Settings → Saves.
+
+**Backups…** (in the ⋯ → Saves menu, or the Shared Saves window) lists
+the snapshots and what each holds. Opened from a game, it goes straight
+to that game's folder. **Restore this folder** or **Restore everything**
+puts files back as they were and removes files created since, leaving
+excluded caches alone. It refuses while a game is running and always
+takes a snapshot first, so a restore can itself be undone.
 
 ## Wine prefixes
 
@@ -313,6 +365,7 @@ backticks are safe even though the file is `source`d.
 | Games | `games/*.conf` |
 | Artwork | `launcher/artwork/{grid,hero,icon}/` |
 | Prefixes | `Prefix/`, `prefixes/<game>/`, or wherever you point them |
-| Save backups | `backups/<game>/<timestamp>/` |
+| Shared saves | `Saves/` |
+| Save backups | `backups/saves/<timestamp>/` |
 | Preferences | `~/.config/launcher/settings.json` |
-| Playtime and favourites | `~/.local/share/launcher/state.db` |
+| Playtime, sessions, favourites | `~/.local/share/launcher/state.db` |

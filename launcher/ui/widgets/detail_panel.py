@@ -49,7 +49,8 @@ class GameDetailPanel(QWidget):
     #: game name, tool key
     prefix_tool_requested = Signal(str, str)
     backup_requested = Signal(str)
-    restore_requested = Signal(str)
+    #: Open the backups, pointed at this game's folders.
+    backups_requested = Signal(str)
     #: game name, dropped image path
     artwork_dropped = Signal(str, str)
 
@@ -211,7 +212,7 @@ class GameDetailPanel(QWidget):
             "Back up now", lambda: self._emit_named(self.backup_requested)
         )
         self._saves_menu.addAction(
-            "Restore\u2026", lambda: self._emit_named(self.restore_requested)
+            "Backups\u2026", lambda: self._emit_named(self.backups_requested)
         )
         self._more_menu.addMenu(self._saves_menu)
         return self._more_menu

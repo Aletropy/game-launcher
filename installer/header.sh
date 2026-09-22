@@ -30,6 +30,7 @@ PRESERVE=(
     Prefix
     prefixes
     backups
+    Saves
     launcher/artwork
     launcher/heroes
     .venv

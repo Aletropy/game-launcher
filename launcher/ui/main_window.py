@@ -28,10 +28,10 @@ from PySide6.QtWidgets import (
 from launcher.app.library_controller import LibraryController
 from launcher.domain.models import Game, SortOrder
 from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
+from launcher.ui.dialogs.backups_dialog import BackupsDialog
 from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask, warn
 from launcher.ui.dialogs.game_dialog import AddGameDialog
 from launcher.ui.dialogs.import_dialog import ImportGamesDialog
-from launcher.ui.dialogs.restore_dialog import RestoreBackupDialog
 from launcher.ui.dialogs.saves_dialog import SavesDialog
 from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
@@ -177,7 +177,7 @@ class MainWindow(QMainWindow):
         detail.clear_log_requested.connect(self._clear_log)
         detail.prefix_tool_requested.connect(self._run_prefix_tool)
         detail.backup_requested.connect(self._backup_saves)
-        detail.restore_requested.connect(self._restore_saves)
+        detail.backups_requested.connect(self._open_backups)
         detail.artwork_dropped.connect(self._artwork_dropped)
 
         journal = self._journal
@@ -443,63 +443,35 @@ class MainWindow(QMainWindow):
             self._ctx.prefix_tools.run(tool, game.prefix)
 
     def _backup_saves(self, name: str) -> None:
-        game = self._lib.game(name)
-        if game is None:
+        self._lib.saves.backup_in_background(f"manual backup ({name})", pinned=True)
+
+    def _open_backups(self, name: str = "") -> None:
+        BackupsDialog(self._ctx, self._lib.saves, self, game_hint=name).exec()
+
+    def share_saves_everywhere(self) -> None:
+        """Bring every prefix into the shared store, if that is the default.
+
+        Runs after the window is shown; each prefix that still keeps its
+        own saves is merged in, with one backup taken first.
+        """
+        if not self._ctx.settings.get_bool("share_saves_by_default"):
             return
-        self.statusBar().showMessage(f"Backing up saves for {name}…")
+        keeper = self._lib.saves
+        if not any(keeper.needs_sharing(p) for p in keeper.all_prefixes()):
+            return
+        self.setCursor(Qt.CursorShape.WaitCursor)
         try:
-            backup = self._ctx.saves.create_backup(name, game.prefix)
-        except (OSError, FileNotFoundError) as e:
-            self.statusBar().clearMessage()
-            warn(self, "Backup Failed", str(e))
-            return
-        self.statusBar().showMessage(
-            f"Backed up {human(backup.size)} to {backup.path.name}.", 8000
-        )
-
-    def _restore_saves(self, name: str) -> None:
-        game = self._lib.game(name)
-        if game is None:
-            return
-        backups = self._ctx.saves.list_backups(name)
-        if not backups:
-            QMessageBox.information(
-                self,
-                "Restore Saves",
-                f"There are no backups for '{name}' yet.\n\n"
-                "Use Saves → Back up now to make one.",
-            )
-            return
-
-        dialog = RestoreBackupDialog(name, backups, self)
-        outcome = dialog.exec()
-        if outcome == 2 and dialog.delete_requested is not None:
-            self._ctx.saves.delete_backup(dialog.delete_requested)
-            self.statusBar().showMessage("Backup deleted.", 4000)
-            return
-        if not outcome or dialog.selected is None:
-            return
-
-        if ask(
-            self,
-            "Restore Saves",
-            f"Restore the backup from {dialog.selected.label} into "
-            f"'{name}'?\n\nFiles it contains will be overwritten.",
-            default=Answer.NO,
-        ) is not Answer.YES:
-            return
-
-        try:
-            count = self._ctx.saves.restore(dialog.selected, game.prefix)
-        except (OSError, FileNotFoundError) as e:
-            warn(self, "Restore Failed", str(e))
-            return
-        self.statusBar().showMessage(f"Restored {count} file(s).", 8000)
+            shared = keeper.share_everything()
+        finally:
+            self.unsetCursor()
+        if shared:
+            names = ", ".join(p.name for p, _ in shared)
+            self.statusBar().showMessage(f"Now sharing saves: {names}.", 10000)
 
     # -- settings ------------------------------------------------------
 
     def _open_saves(self) -> None:
-        SavesDialog(self._ctx, parent=self).exec()
+        SavesDialog(self._ctx, self._lib.saves, parent=self).exec()
         self._lib.reload()
 
     def _open_settings(self) -> None:

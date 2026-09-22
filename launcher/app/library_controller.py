@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from launcher.app.context import AppContext
-from launcher.domain import prefixes
+from launcher.app.save_keeper import SaveKeeper
 from launcher.domain.models import (
     Game,
     GameConfig,
@@ -45,6 +45,10 @@ class LibraryController(QObject):
         settings = context.settings
         self._sort = _sort_from_settings(settings.get_str("sort_order"))
         self._hide_missing = settings.get_bool("hide_missing")
+
+        self.saves = SaveKeeper(context, self)
+        self.saves.status.connect(self.status)
+        self.saves.error.connect(self.error)
 
         # Playtime is recorded here rather than in the window, so it is
         # counted whether or not any view is listening.
@@ -216,44 +220,8 @@ class LibraryController(QObject):
             )
             return False
         if game is not None:
-            self._repair_save_links(game)
+            self.saves.before_launch(game)
         return self._ctx.processes.launch(name)
-
-    def _repair_save_links(self, game: Game) -> None:
-        """Put back links Proton replaced, before the game runs.
-
-        wineboot recreates missing user folders on a Proton update and
-        replaces the symlinks with real directories, which quietly
-        splits saves in two. Anything written into the replacement is
-        merged back into the store first, so nothing is lost.
-        """
-        store = self._ctx.save_store
-        prefix = prefixes.resolve(game.prefix, self._ctx.paths)
-        try:
-            broken = store.verify(prefix)
-            if not broken:
-                return
-            result = store.repair(prefix)
-        except OSError as e:
-            self.error.emit("Shared Saves", f"Could not check the save links:\n{e}")
-            return
-
-        if result.errors:
-            self.error.emit(
-                "Shared Saves",
-                "Some shared save folders could not be restored:\n"
-                + "\n".join(result.errors[:5]),
-            )
-        elif result.did_work:
-            recovered = (
-                f", {result.recovered_files} new file(s) kept"
-                if result.recovered_files
-                else ""
-            )
-            self.status.emit(
-                f"Restored {len(result.repaired)} shared save link(s)"
-                f"{recovered}."
-            )
 
     def stop(self, name: str) -> bool:
         return self._ctx.processes.stop(name)

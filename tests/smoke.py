@@ -993,11 +993,213 @@ def backups_of_a_linked_prefix_hold_real_data() -> None:
         ctx.save_store.adopt(prefix)
         assert ctx.save_store.status(prefix).fully_linked
 
-        backup = ctx.saves.create_backup("Test Game", "")
-        found = list(backup.path.rglob("save.sav"))
+        backup = ctx.backups.create("test")
+        found = list(backup.data.rglob("save.sav"))
         assert found, "the save did not make it into the backup"
         assert not found[0].is_symlink(), "backed up a symlink, not the data"
         assert found[0].read_text() == "REAL DATA"
+
+
+@test
+def backup_exclusions_cover_whole_cache_folders() -> None:
+    from launcher.domain.backup_policy import Exclusions
+
+    rules = Exclusions.with_extra("Documents/Big Game/mods  # downloaded\n\n")
+    assert rules.excludes("AppData/Local/dxvk/game.dxvk-cache")
+    assert rules.excludes("AppData/Local/Temp")
+    assert rules.excludes("AppData/Roaming/Some Game/Cache/blob.bin")
+    assert rules.excludes("Documents/big game/MODS/x.scs"), "user rule, any case"
+    assert not rules.excludes("AppData/Roaming/Some Game/save.sav")
+    assert not rules.excludes("AppData/Roaming/Cachet/save.sav"), "prefix, not word"
+    assert not Exclusions(()).excludes("anything"), "no rules excludes nothing"
+
+
+@test
+def retention_keeps_recent_daily_weekly_and_pinned() -> None:
+    from datetime import date
+
+    from launcher.domain.backup_policy import Retention, SnapshotAge, to_prune
+
+    today = date(2026, 9, 22)  # a Tuesday
+    base = datetime(2026, 9, 22, 20, 0)
+    snaps = [SnapshotAge(f"h{i}", base - timedelta(hours=i)) for i in range(8)]
+    snaps += [SnapshotAge(f"d{i}", base - timedelta(days=i, hours=1)) for i in range(1, 40)]
+    snaps.append(SnapshotAge("old-pinned", base - timedelta(days=300), pinned=True))
+    doomed = set(to_prune(snaps, Retention(recent=3, daily=7, weekly=4), today))
+
+    assert {"h0", "h1", "h2"}.isdisjoint(doomed), "the latest are kept"
+    assert "h3" in doomed, "extra ones from today go"
+    assert {f"d{i}" for i in range(1, 7)}.isdisjoint(doomed), "one per day"
+    assert "old-pinned" not in doomed
+    assert "d30" in doomed, "older than the weekly window"
+    kept_old_weeks = {f"d{i}" for i in range(7, 40)} - doomed
+    assert 1 <= len(kept_old_weeks) <= 3, kept_old_weeks
+
+
+def _store_with(ctx, files: dict[str, str]) -> Path:
+    for relative, text in files.items():
+        path = ctx.paths.saves_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return ctx.paths.saves_dir
+
+
+@test
+def snapshots_share_unchanged_files_and_restore_exactly() -> None:
+    with sandbox() as ctx:
+        store = _store_with(ctx, {
+            "AppData/Roaming/Game/save.sav": "v1",
+            "AppData/Roaming/Game/settings.ini": "same",
+            "AppData/Local/dxvk/big.cache": "cache",
+            "Documents/Other/keep.sav": "other",
+        })
+        first = ctx.backups.create("first")
+        assert not (first.data / "AppData/Local/dxvk").exists(), "cache backed up"
+        assert (first.data / "AppData/Roaming/Game/save.sav").read_text() == "v1"
+
+        save = store / "AppData/Roaming/Game/save.sav"
+        save.write_text("v2 longer")
+        os.utime(save, (time.time() + 5, time.time() + 5))
+        (store / "AppData/Roaming/Game/new.sav").write_text("new")
+        second = ctx.backups.create("second")
+        unchanged = "AppData/Roaming/Game/settings.ini"
+        assert (first.data / unchanged).stat().st_ino == (
+            second.data / unchanged
+        ).stat().st_ino, "an unchanged file was copied instead of linked"
+        assert second.new_bytes == len("v2 longer") + len("new")
+
+        # A game rewriting its save in place must not reach the backup.
+        save.write_text("v3")
+        assert (second.data / "AppData/Roaming/Game/save.sav").read_text() == "v2 longer"
+
+        result = ctx.backups.restore(first)
+        assert save.read_text() == "v1"
+        assert not (store / "AppData/Roaming/Game/new.sav").exists()
+        assert (store / "AppData/Local/dxvk/big.cache").exists(), "cache touched"
+        assert result.safety is not None
+        assert (result.safety.data / "AppData/Roaming/Game/save.sav").read_text() == "v3"
+        for spec_dir in ("AppData/Local", "Documents", "Saved Games"):
+            assert (store / spec_dir).is_dir() or spec_dir == "Saved Games"
+
+
+@test
+def restoring_one_folder_leaves_the_rest_alone() -> None:
+    with sandbox() as ctx:
+        store = _store_with(ctx, {
+            "AppData/Roaming/A/save.sav": "a1",
+            "AppData/Roaming/B/save.sav": "b1",
+        })
+        snap = ctx.backups.create("snap")
+        (store / "AppData/Roaming/A/save.sav").write_text("a2!")
+        (store / "AppData/Roaming/B/save.sav").write_text("b2!")
+        ctx.backups.restore(snap, "AppData/Roaming/A", safety_snapshot=False)
+        assert (store / "AppData/Roaming/A/save.sav").read_text() == "a1"
+        assert (store / "AppData/Roaming/B/save.sav").read_text() == "b2!"
+
+
+@test
+def an_interrupted_snapshot_is_never_listed_and_is_cleared() -> None:
+    with sandbox() as ctx:
+        _store_with(ctx, {"Documents/x.sav": "x"})
+        partial = ctx.backups.root / "2026-01-01_000000.partial"
+        (partial / "data").mkdir(parents=True)
+        assert ctx.backups.snapshots() == []
+        ctx.backups.create("real")
+        assert not partial.exists()
+        assert len(ctx.backups.snapshots()) == 1
+
+
+@test
+def launching_shares_the_prefix_after_backing_up_the_store() -> None:
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        exe = ctx.paths.base / "game.exe"
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_bytes(b"MZ")
+        ctx.games.add(GameConfig(name="Alpha", executable=str(exe)))
+        _store_with(ctx, {"Documents/Older/save.sav": "old"})
+        prefix = _make_prefix(
+            ctx, "Prefix", {"users/steamuser/Documents/Alpha/save.sav": "alpha"}
+        )
+        library = LibraryController(ctx)
+        keeper = library.saves
+        game = ctx.games.get("Alpha")
+        assert game is not None and keeper.needs_sharing(prefix)
+
+        keeper.before_launch(game)
+        assert ctx.save_store.status(prefix).fully_linked
+        assert (ctx.paths.saves_dir / "Documents/Alpha/save.sav").read_text() == "alpha"
+        snaps = ctx.backups.snapshots()
+        assert len(snaps) == 1 and "before sharing" in snaps[0].reason
+        assert (snaps[0].data / "Documents/Older/save.sav").exists()
+
+        # Already shared: launching again does nothing and takes no backup.
+        keeper.before_launch(game)
+        assert len(ctx.backups.snapshots()) == 1
+
+
+@test
+def sharing_by_default_can_be_turned_off() -> None:
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        ctx.settings.set("share_saves_by_default", False)
+        ctx.games.add(GameConfig(name="Alpha", executable="/g/a.exe"))
+        prefix = _make_prefix(ctx, "Prefix", {"users/steamuser/Documents/a.sav": "a"})
+        library = LibraryController(ctx)
+        keeper = library.saves
+        game = ctx.games.get("Alpha")
+        assert game is not None
+        keeper.before_launch(game)
+        assert ctx.save_store.status(prefix).unlinked
+
+
+@test
+def share_everything_takes_one_backup_for_all_prefixes() -> None:
+    from launcher.app.library_controller import LibraryController
+
+    with sandbox() as ctx:
+        _store_with(ctx, {"Documents/x.sav": "x"})
+        first = _make_prefix(ctx, "Prefix", {"users/steamuser/Documents/a/1.sav": "1"})
+        second = _make_prefix(
+            ctx, "prefixes/Beta", {"users/steamuser/Documents/b/2.sav": "2"}
+        )
+        library = LibraryController(ctx)
+        keeper = library.saves
+        shared = keeper.share_everything()
+        assert {p for p, _ in shared} == {first, second}
+        assert len(ctx.backups.snapshots()) == 1
+        assert keeper.share_everything() == []
+
+
+@test
+def backups_point_at_a_games_own_folder() -> None:
+    from launcher.ui.dialogs.backups_dialog import _starts_word, hint_tokens
+
+    tokens = hint_tokens("Elden Ring Nightreign")
+    assert tokens == ["elden", "ring", "nightreign"]
+    assert _starts_word("nightreign", "nightreign")
+    assert _starts_word("elden ring", "elden")
+    assert not _starts_word("helden", "elden"), "matched inside a word"
+
+
+@test
+def automatic_backups_wait_for_the_interval() -> None:
+    from launcher.app.library_controller import LibraryController
+
+    with sandbox() as ctx:
+        _store_with(ctx, {"Documents/x.sav": "x"})
+        library = LibraryController(ctx)
+        keeper = library.saves
+        assert keeper.backup_due(), "no backup yet"
+        snap = ctx.backups.create("t")
+        assert not keeper.backup_due()
+        assert keeper.backup_due(snap.created + timedelta(minutes=31))
+        ctx.settings.set("backup_auto", False)
+        assert not keeper.backup_due(snap.created + timedelta(days=9))
 
 
 @test
@@ -1408,10 +1610,12 @@ def every_feature_dialog_is_reachable_from_the_window() -> None:
 
 @test
 def dialogs_all_construct() -> None:
+    from launcher.app.library_controller import LibraryController
     from launcher.domain.models import GameConfig
+    from launcher.ui.dialogs.backups_dialog import BackupsDialog
     from launcher.ui.dialogs.game_dialog import AddGameDialog
     from launcher.ui.dialogs.import_dialog import ImportGamesDialog
-    from launcher.ui.dialogs.restore_dialog import RestoreBackupDialog
+    from launcher.ui.dialogs.saves_dialog import SavesDialog
     from launcher.ui.dialogs.settings_dialog import SettingsDialog
     from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 
@@ -1419,6 +1623,7 @@ def dialogs_all_construct() -> None:
     with sandbox() as ctx:
         ctx.games.add(GameConfig(name="Alpha", executable="/g/a.exe"))
         game = ctx.games.get("Alpha")
+        library = LibraryController(ctx)
 
         for dialog in (
             AddGameDialog(ctx.paths),
@@ -1426,7 +1631,8 @@ def dialogs_all_construct() -> None:
             SettingsDialog(ctx),
             ImportGamesDialog(ctx),
             SGDBDialog(ctx, game_name="Alpha"),
-            RestoreBackupDialog("Alpha", []),
+            BackupsDialog(ctx, library.saves, game_hint="Alpha"),
+            SavesDialog(ctx, library.saves),
         ):
             dialog.show()
             app.processEvents()

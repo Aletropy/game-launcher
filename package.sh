@@ -164,7 +164,7 @@ verify_staging() {
     # Nothing personal or machine-specific may ship. Names that could
     # also be source directories are checked by exact path.
     local forbidden_names=(
-        ".venv" "Prefix" "prefixes" "backups"
+        ".venv" "Prefix" "prefixes" "backups" "Saves"
         ".git" ".mypy_cache" ".ruff_cache" "state.db" "settings.json"
     )
     local name found=0
@@ -304,7 +304,7 @@ build_source_archive() {
         err "stored artwork is in the source archive"
         leaked=1
     fi
-    if printf '%s\n' "$listing" | grep -qE '/(\.venv|Prefix|prefixes|backups|dist)/'; then
+    if printf '%s\n' "$listing" | grep -qE '/(\.venv|Prefix|prefixes|backups|Saves|dist)/'; then
         err "local state is in the source archive"
         leaked=1
     fi
