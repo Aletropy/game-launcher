@@ -549,6 +549,74 @@ QToolButton#swatch {
     border: none;
 }
 
+QListWidget#settingsNav {
+    background-color: $surface;
+    border: none;
+    border-right: 1px solid $border;
+    border-radius: 0;
+    padding: 16px 10px;
+    outline: none;
+}
+
+QListWidget#settingsNav::item {
+    color: $fg;
+    padding: 9px 12px;
+    margin: 1px 0;
+    border-radius: ${radius}px;
+}
+
+QListWidget#settingsNav::item:hover {
+    background-color: $hover;
+}
+
+QListWidget#settingsNav::item:selected {
+    background-color: $selection;
+    color: $fg_bright;
+    font-weight: bold;
+}
+
+QWidget#settingsPage, QScrollArea#settingsScroll {
+    background-color: $bg;
+}
+
+QLabel#pageTitle {
+    color: $fg_bright;
+    font-size: ${font_xl}px;
+    font-weight: bold;
+}
+
+QFrame#settingsCard {
+    background-color: $surface;
+    border: 1px solid $border;
+    border-radius: ${radius_lg}px;
+}
+
+QFrame#settingsCard QLabel {
+    background: transparent;
+}
+
+QLabel#cardTitle {
+    color: $fg_bright;
+    font-size: ${font_md}px;
+    font-weight: bold;
+}
+
+QPushButton#topMenuButton {
+    padding: 6px 14px;
+}
+
+QPushButton#topMenuButton[menu="true"] {
+    padding-right: 28px;
+}
+
+QPushButton#topMenuButton::menu-indicator {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    image: url("$icon_down");
+    width: 10px;
+    right: 6px;
+}
+
 QPushButton#stepPill {
     background-color: transparent;
     color: $fg_muted;

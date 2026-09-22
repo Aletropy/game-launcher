@@ -1748,25 +1748,57 @@ def every_feature_dialog_is_reachable_from_the_window() -> None:
         window.show()
         app.processEvents()
 
-        labels = {b.text() for b in window.findChildren(QPushButton)}
-        for wanted in ("Shared Saves\u2026", "Clean Up Artwork\u2026", "Settings\u2026"):
-            assert wanted in labels, f"no {wanted!r} button; found {sorted(labels)}"
+        buttons = {b.text(): b for b in window.findChildren(QPushButton)}
+        for wanted in ("Saves", "Settings"):
+            assert wanted in buttons, f"no {wanted!r} button; found {sorted(buttons)}"
+        menu = buttons["Saves"].menu()
+        assert menu is not None, "the Saves button has no menu"
+        actions = {a.text(): a for a in menu.actions()}
+        for wanted in ("Shared saves\u2026", "Backups\u2026", "Back up now"):
+            assert wanted in actions, f"no {wanted!r} in the Saves menu"
 
         opened: list[str] = []
         original = saves_dialog.SavesDialog.exec
         saves_dialog.SavesDialog.exec = lambda self: opened.append("saves") or 0
         try:
-            button = next(
-                b for b in window.findChildren(QPushButton)
-                if b.text() == "Shared Saves\u2026"
-            )
-            button.click()
+            actions["Shared saves\u2026"].trigger()
             app.processEvents()
         finally:
             saves_dialog.SavesDialog.exec = original
 
         assert opened == ["saves"], "clicking Shared Saves did not open it"
         window.close()
+
+
+@test
+def settings_pages_reach_every_tool() -> None:
+    """Tools moved off the toolbar must still open, from their page."""
+    from PySide6.QtWidgets import QPushButton
+
+    from launcher.ui.dialogs.settings_dialog import SettingsDialog
+
+    qt_app()
+    with sandbox() as ctx:
+        dialog = SettingsDialog(ctx, page="saves")
+        titles = [dialog._nav.item(i).text() for i in range(dialog._nav.count())]
+        assert titles[:3] == ["Appearance", "Library", "Artwork"], titles
+        assert dialog._nav.currentItem().text() == "Saves & backups"
+
+        fired: list[str] = []
+        for signal, name in (
+            (dialog.cleanup_requested, "cleanup"),
+            (dialog.shared_saves_requested, "saves"),
+            (dialog.backups_requested, "backups"),
+            (dialog.clear_data_requested, "clear"),
+        ):
+            signal.connect(lambda n=name: fired.append(n))
+        for button in dialog.findChildren(QPushButton):
+            if button.text() in (
+                "Clean up artwork\u2026", "Shared saves\u2026", "Backups\u2026",
+                "Clear data\u2026",
+            ):
+                button.click()
+        assert sorted(fired) == ["backups", "cleanup", "clear", "saves"], fired
 
 
 class _FakeSgdb:

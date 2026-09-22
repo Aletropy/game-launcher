@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -13,13 +14,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QGroupBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
     QRadioButton,
-    QScrollArea,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -28,6 +29,15 @@ from launcher.data.paths import Paths
 from launcher.domain import prefixes
 from launcher.domain.models import Game, GameConfig
 from launcher.ui.dialogs.confirm import warn
+
+#: Config field, label, placeholder for the Proton and driver variables.
+_ENV_FIELDS = (
+    ("proton_use_wine_sync", "PROTON_USE_WINE_SYNC", "1 to use wine's own sync"),
+    ("winedebug", "WINEDEBUG", "-all"),
+    ("vkd3d_config", "VKD3D_CONFIG", "dxr"),
+    ("radv_perftest", "RADV_PERFTEST", "gpl"),
+    ("pulse_latency_msec", "PULSE_LATENCY_MSEC", "60"),
+)
 
 
 class AddGameDialog(QDialog):
@@ -44,179 +54,189 @@ class AddGameDialog(QDialog):
         self.game = game
         self.is_edit = game is not None
         self.setWindowTitle("Edit Game" if self.is_edit else "Add Game")
-        self.setMinimumWidth(500)
-        self.setMinimumHeight(600)
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(420)
         self._setup_ui()
 
     def _setup_ui(self) -> None:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(16, 16, 16, 12)
+        main_layout.setSpacing(12)
 
-        form_widget = QWidget()
-        form_layout = QVBoxLayout(form_widget)
-        form_layout.setSpacing(12)
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_general(), "General")
+        self._tabs.addTab(self._build_compatibility(), "Compatibility")
+        self._tabs.addTab(self._build_display(), "Display")
+        self._tabs.addTab(self._build_advanced(), "Advanced")
+        main_layout.addWidget(self._tabs, stretch=1)
 
-        # Basic info
-        basic_group = QGroupBox("Basic Information")
-        basic_layout = QVBoxLayout(basic_group)
+        buttons = QDialogButtonBox()
+        buttons.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
+        save = buttons.addButton(
+            "Save" if self.is_edit else "Add Game", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        save.setObjectName("playButton")
+        buttons.accepted.connect(self._validate_and_accept)
+        buttons.rejected.connect(self.reject)
+        main_layout.addWidget(buttons)
 
-        basic_layout.addWidget(QLabel("Game Name"))
+        if self.is_edit and self.game:
+            self._populate_fields()
+
+    # -- tabs ------------------------------------------------------------
+
+    @staticmethod
+    def _page() -> tuple[QWidget, QFormLayout]:
+        page = QWidget()
+        form = QFormLayout(page)
+        form.setContentsMargins(14, 16, 14, 14)
+        form.setSpacing(10)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        return page, form
+
+    @staticmethod
+    def _hint(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("hintLabel")
+        label.setWordWrap(True)
+        return label
+
+    @staticmethod
+    def _with_browse(edit: QLineEdit, handler: Callable[[], None]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        row.addWidget(edit, stretch=1)
+        button = QPushButton("Browse\u2026")
+        button.clicked.connect(handler)
+        row.addWidget(button)
+        return row
+
+    def _build_general(self) -> QWidget:
+        page, form = self._page()
         self._name_edit = QLineEdit()
-        basic_layout.addWidget(self._name_edit)
+        self._name_edit.setPlaceholderText("How it appears in the library")
+        form.addRow("Name", self._name_edit)
 
-        exe_row = QHBoxLayout()
-        exe_row.addWidget(QLabel("Executable Path"))
         self._exe_edit = QLineEdit()
         self._exe_edit.setPlaceholderText("/path/to/game.exe")
-        exe_row.addWidget(self._exe_edit)
-        browse_btn = QPushButton("Browse")
-        browse_btn.setFixedWidth(80)
-        browse_btn.clicked.connect(self._browse_exe)
-        exe_row.addWidget(browse_btn)
-        basic_layout.addLayout(exe_row)
+        form.addRow("Executable", self._with_browse(self._exe_edit, self._browse_exe))
 
-        basic_layout.addWidget(QLabel("Steam Game ID"))
-        self._appid_edit = QLineEdit("480")
-        self._appid_edit.setPlaceholderText("480 (default)")
-        basic_layout.addWidget(self._appid_edit)
-
-        basic_layout.addWidget(QLabel("Game Arguments (space-separated)"))
         self._args_edit = QLineEdit()
         self._args_edit.setPlaceholderText("-console -windowed")
-        basic_layout.addWidget(self._args_edit)
+        form.addRow("Arguments", self._args_edit)
+        form.addRow(self._hint("Passed to the game, separated by spaces."))
 
-        form_layout.addWidget(basic_group)
+        self._appid_edit = QLineEdit("480")
+        self._appid_edit.setPlaceholderText("480")
+        form.addRow("Steam App ID", self._appid_edit)
+        form.addRow(
+            self._hint(
+                "Used by Proton for game-specific fixes. 480 (Spacewar) works "
+                "for games that are not on Steam."
+            )
+        )
+        return page
 
-        # Proton settings
-        proton_group = QGroupBox("Proton Settings")
-        proton_layout = QVBoxLayout(proton_group)
+    def _build_compatibility(self) -> QWidget:
+        page, form = self._page()
 
-        proton_row = QHBoxLayout()
-        proton_row.addWidget(QLabel("Custom Proton Path"))
         self._proton_edit = QLineEdit()
-        self._proton_edit.setPlaceholderText("/usr/bin/proton-ge (optional)")
-        proton_row.addWidget(self._proton_edit)
-        proton_browse = QPushButton("Browse")
-        proton_browse.setFixedWidth(80)
-        proton_browse.clicked.connect(self._browse_proton)
-        proton_row.addWidget(proton_browse)
-        proton_layout.addLayout(proton_row)
+        self._proton_edit.setPlaceholderText("Default Proton")
+        form.addRow("Proton", self._with_browse(self._proton_edit, self._browse_proton))
 
-        dll_row = QHBoxLayout()
-        dll_row.addWidget(QLabel("Additional DLLs"))
         self._dlls_edit = QLineEdit()
         self._dlls_edit.setPlaceholderText("d3d11=n,b;dxgi=n,b")
-        dll_row.addWidget(self._dlls_edit)
-        proton_layout.addLayout(dll_row)
+        form.addRow("DLL overrides", self._dlls_edit)
 
-        form_layout.addWidget(proton_group)
-
-        # Wine prefix
-        prefix_group = QGroupBox("Wine Prefix")
-        prefix_layout = QVBoxLayout(prefix_group)
-
-        self._prefix_shared = QRadioButton("Shared prefix")
-        self._prefix_custom = QRadioButton("Custom prefix")
+        prefix_box = QWidget()
+        prefix_layout = QVBoxLayout(prefix_box)
+        prefix_layout.setContentsMargins(0, 0, 0, 0)
+        prefix_layout.setSpacing(6)
+        choice = QHBoxLayout()
+        self._prefix_shared = QRadioButton("Shared")
+        self._prefix_custom = QRadioButton("Its own")
         self._prefix_shared.setChecked(True)
         self._prefix_shared.toggled.connect(self._update_prefix_state)
-        prefix_layout.addWidget(self._prefix_shared)
-        prefix_layout.addWidget(self._prefix_custom)
+        choice.addWidget(self._prefix_shared)
+        choice.addWidget(self._prefix_custom)
+        choice.addStretch()
+        prefix_layout.addLayout(choice)
 
         prefix_row = QHBoxLayout()
         self._prefix_edit = QLineEdit()
         self._prefix_edit.setPlaceholderText(prefixes.suggest("Game"))
         self._prefix_edit.textChanged.connect(self._update_prefix_status)
-        prefix_row.addWidget(self._prefix_edit)
-        self._prefix_browse = QPushButton("Browse")
-        self._prefix_browse.setFixedWidth(80)
+        prefix_row.addWidget(self._prefix_edit, stretch=1)
+        self._prefix_browse = QPushButton("Browse\u2026")
         self._prefix_browse.clicked.connect(self._browse_prefix)
         prefix_row.addWidget(self._prefix_browse)
         prefix_layout.addLayout(prefix_row)
 
-        self._prefix_status = QLabel()
-        self._prefix_status.setObjectName("hintLabel")
-        self._prefix_status.setWordWrap(True)
+        self._prefix_status = self._hint("")
         prefix_layout.addWidget(self._prefix_status)
+        form.addRow("Wine prefix", prefix_box)
+        return page
 
-        form_layout.addWidget(prefix_group)
-
-        # Gamescope settings
-        gs_group = QGroupBox("Gamescope Settings")
-        gs_layout = QVBoxLayout(gs_group)
-
-        self._gs_check = QCheckBox("Enable Gamescope")
+    def _build_display(self) -> QWidget:
+        page, form = self._page()
+        self._gs_check = QCheckBox("Run inside Gamescope")
         self._gs_check.toggled.connect(self._toggle_gamescope)
-        gs_layout.addWidget(self._gs_check)
+        form.addRow(self._gs_check)
 
         self._gs_widget = QWidget()
-        gs_form = QVBoxLayout(self._gs_widget)
+        gs_form = QFormLayout(self._gs_widget)
         gs_form.setContentsMargins(0, 0, 0, 0)
+        gs_form.setSpacing(10)
 
-        gs_res_row = QHBoxLayout()
-        gs_res_row.addWidget(QLabel("Internal Resolution"))
-        self._gsw_edit = QLineEdit("1280")
-        self._gsw_edit.setMaximumWidth(80)
-        gs_res_row.addWidget(self._gsw_edit)
-        gs_res_row.addWidget(QLabel("x"))
-        self._gsh_edit = QLineEdit("720")
-        self._gsh_edit.setMaximumWidth(80)
-        gs_res_row.addWidget(self._gsh_edit)
-        gs_res_row.addStretch()
-        gs_form.addLayout(gs_res_row)
+        def resolution(w: str, h: str) -> tuple[QHBoxLayout, QLineEdit, QLineEdit]:
+            row = QHBoxLayout()
+            width, height = QLineEdit(w), QLineEdit(h)
+            for edit in (width, height):
+                edit.setMaximumWidth(90)
+            row.addWidget(width)
+            row.addWidget(QLabel("\u00d7"))
+            row.addWidget(height)
+            row.addStretch()
+            return row, width, height
 
-        gs_out_row = QHBoxLayout()
-        gs_out_row.addWidget(QLabel("Output Resolution"))
-        self._gswout_edit = QLineEdit("1920")
-        self._gswout_edit.setMaximumWidth(80)
-        gs_out_row.addWidget(self._gswout_edit)
-        gs_out_row.addWidget(QLabel("x"))
-        self._gshout_edit = QLineEdit("1080")
-        self._gshout_edit.setMaximumWidth(80)
-        gs_out_row.addWidget(self._gshout_edit)
-        gs_out_row.addStretch()
-        gs_form.addLayout(gs_out_row)
-
-        gs_form.addWidget(QLabel("Gamescope Args"))
+        row, self._gsw_edit, self._gsh_edit = resolution("1280", "720")
+        gs_form.addRow("Game renders at", row)
+        row, self._gswout_edit, self._gshout_edit = resolution("1920", "1080")
+        gs_form.addRow("Shown at", row)
         self._gsargs_edit = QLineEdit("-f -e")
-        gs_form.addWidget(self._gsargs_edit)
-
-        gs_layout.addWidget(self._gs_widget)
+        gs_form.addRow("Extra arguments", self._gsargs_edit)
+        form.addRow(self._gs_widget)
+        form.addRow(
+            self._hint(
+                "Gamescope renders the game at one resolution and scales it to "
+                "another, e.g. for older games or FSR upscaling."
+            )
+        )
         self._gs_widget.setVisible(self._gs_check.isChecked())
+        return page
 
-        form_layout.addWidget(gs_group)
-
-        # Advanced settings
-        adv_group = QGroupBox("Advanced Settings (optional)")
-        adv_layout = QVBoxLayout(adv_group)
-
-        adv_layout.addWidget(QLabel("Override App ID"))
+    def _build_advanced(self) -> QWidget:
+        page, form = self._page()
         self._override_id_edit = QLineEdit()
-        adv_layout.addWidget(self._override_id_edit)
+        self._override_id_edit.setPlaceholderText("Same as the Steam App ID")
+        form.addRow("Override App ID", self._override_id_edit)
 
-        adv_layout.addWidget(QLabel("Extra Env Vars (one per line)"))
         self._extra_vars_edit = QLineEdit()
         self._extra_vars_edit.setPlaceholderText("MY_VAR=value;OTHER=val")
-        adv_layout.addWidget(self._extra_vars_edit)
+        form.addRow("Environment", self._extra_vars_edit)
+        form.addRow(self._hint("Extra variables, separated by semicolons."))
 
-        form_layout.addWidget(adv_group)
-        form_layout.addStretch()
-
-        scroll.setWidget(form_widget)
-
-        main_layout = QVBoxLayout(self)
-        main_layout.addWidget(scroll)
-
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self._validate_and_accept)
-        buttons.rejected.connect(self.reject)
-        main_layout.addWidget(buttons)
-
-        # Populate fields if editing
-        if self.is_edit and self.game:
-            self._populate_fields()
+        section = QLabel("Proton and driver options")
+        section.setObjectName("sectionTitle")
+        form.addRow(section)
+        self._env_edits: dict[str, QLineEdit] = {}
+        for field, label, placeholder in _ENV_FIELDS:
+            edit = QLineEdit()
+            edit.setPlaceholderText(placeholder)
+            form.addRow(label, edit)
+            self._env_edits[field] = edit
+        form.addRow(self._hint("Leave blank to use the defaults."))
+        return page
 
     def _populate_fields(self) -> None:
         if self.game is None:
@@ -236,6 +256,8 @@ class AddGameDialog(QDialog):
         self._gsargs_edit.setText(g.config.gamescope_args)
         self._override_id_edit.setText(g.config.override_app_id)
         self._extra_vars_edit.setText(";".join(g.config.extra_vars))
+        for field, edit in self._env_edits.items():
+            edit.setText(str(getattr(g.config, field)))
         if g.config.prefix:
             self._prefix_custom.setChecked(True)
             self._prefix_edit.setText(g.config.prefix)
@@ -344,6 +366,9 @@ class AddGameDialog(QDialog):
             "prefix": prefix,
             "extra_vars": extra_vars,
         }
+        edited.update(
+            {field: edit.text().strip() for field, edit in self._env_edits.items()}
+        )
 
         if self.is_edit and self.game is not None:
             # replace() on the existing config rather than a fresh one:

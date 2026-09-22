@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -110,20 +111,30 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
-        self._saves_btn = QPushButton("Shared Saves…")
+        # Everything else lives in Settings, grouped by subject; saves get
+        # a menu here because they are what people reach for mid-session.
+        self._saves_btn = QPushButton("Saves")
+        self._saves_btn.setObjectName("topMenuButton")
         self._saves_btn.setFixedHeight(32)
-        self._saves_btn.setToolTip("One copy of your saves, linked into every prefix")
-        self._saves_btn.clicked.connect(self._open_saves)
+        self._saves_btn.setToolTip("Shared saves and backups")
+        self._saves_menu = QMenu(self._saves_btn)
+        self._saves_menu.addAction("Shared saves\u2026", self._open_saves)
+        self._saves_menu.addAction("Backups\u2026", self._open_backups)
+        self._saves_menu.addSeparator()
+        self._saves_menu.addAction(
+            "Back up now",
+            lambda: self._lib.saves.backup_in_background("manual backup", pinned=True),
+        )
+        self._saves_btn.setMenu(self._saves_menu)
+        self._saves_btn.setProperty("menu", "true")
         layout.addWidget(self._saves_btn)
 
-        cleanup_btn = QPushButton("Clean Up Artwork…")
-        cleanup_btn.setFixedHeight(32)
-        cleanup_btn.clicked.connect(self._clean_up_artwork)
-        layout.addWidget(cleanup_btn)
-
-        settings_btn = QPushButton("Settings…")
+        settings_btn = QPushButton("Settings")
+        settings_btn.setObjectName("topMenuButton")
         settings_btn.setFixedHeight(32)
-        settings_btn.clicked.connect(self._open_settings)
+        settings_btn.setToolTip("Settings (Ctrl+,)")
+        # clicked passes `checked`, which must not land in `page`.
+        settings_btn.clicked.connect(lambda _checked: self._open_settings())
         layout.addWidget(settings_btn)
         return bar
 
@@ -488,9 +499,12 @@ class MainWindow(QMainWindow):
         SavesDialog(self._ctx, self._lib.saves, parent=self).exec()
         self._lib.reload()
 
-    def _open_settings(self) -> None:
-        dialog = SettingsDialog(self._ctx, parent=self)
+    def _open_settings(self, page: str = "appearance") -> None:
+        dialog = SettingsDialog(self._ctx, parent=self, page=page)
         dialog.clear_data_requested.connect(lambda: self._clear_data("", dialog))
+        dialog.cleanup_requested.connect(self._clean_up_artwork)
+        dialog.shared_saves_requested.connect(self._open_saves)
+        dialog.backups_requested.connect(self._open_backups)
         dialog.exec()
 
     def _clear_data(self, name: str = "", parent: QWidget | None = None) -> None:

@@ -229,7 +229,7 @@ class AppearancePanel(QWidget):
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
 
         heading = QLabel("Theme")
