@@ -28,9 +28,11 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from launcher.services.artwork import GRID, HERO, LOGO, ArtworkService
-from launcher.ui.theme import DARK
+from launcher.ui.theme import palette
 
 _MARGIN = 20
+_TEXT_BRIGHT = "#f4f6f8"
+_TEXT = "#d5dbe1"
 _COVER_RADIUS = 8.0
 #: Below this a hero is too narrow to fill the banner without upscaling
 #: badly, so the cover composition is used instead.
@@ -43,6 +45,8 @@ class _Key:
     width: int
     height: int
     dpr: float
+    #: The background shows through where there is no art.
+    background: str
 
 
 def _fill(image: QImage, width: int, height: int) -> QImage:
@@ -128,7 +132,8 @@ class HeroBanner(QWidget):
         pixel_w, pixel_h = round(width * dpr), round(height * dpr)
         canvas = QPixmap(pixel_w, pixel_h)
         canvas.setDevicePixelRatio(dpr)
-        canvas.fill(QColor(DARK.bg))
+        colours = palette()
+        canvas.fill(QColor(colours.bg))
 
         painter = QPainter(canvas)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -157,8 +162,8 @@ class HeroBanner(QWidget):
                 text_left = self._draw_cover(painter, cover, height, dpr)
         else:
             gradient = QLinearGradient(0, 0, 0, height)
-            gradient.setColorAt(0, QColor(DARK.placeholder_top))
-            gradient.setColorAt(1, QColor(DARK.placeholder_bottom))
+            gradient.setColorAt(0, QColor(colours.placeholder_top))
+            gradient.setColorAt(1, QColor(colours.placeholder_bottom))
             painter.fillRect(0, 0, width, height, gradient)
 
         self._draw_scrim(painter, width, height)
@@ -244,14 +249,15 @@ class HeroBanner(QWidget):
         baseline = height - _MARGIN - (22 if self._subtitle else 0)
         painter.setPen(QColor(0, 0, 0, 150))
         painter.drawText(int(left) + 1, int(baseline) + 2, title)
-        painter.setPen(QColor(DARK.fg_bright))
+        # Always over a dark scrim, so always light, whatever the theme.
+        painter.setPen(QColor(_TEXT_BRIGHT))
         painter.drawText(int(left), int(baseline), title)
 
         if self._subtitle:
             sub_font = QFont(self.font())
             sub_font.setPointSizeF(max(sub_font.pointSizeF(), 9) * 1.05)
             painter.setFont(sub_font)
-            painter.setPen(QColor(DARK.fg))
+            painter.setPen(QColor(_TEXT))
             painter.drawText(
                 int(left), int(height - _MARGIN), self._subtitle
             )
@@ -263,7 +269,7 @@ class HeroBanner(QWidget):
 
     def paintEvent(self, event: QPaintEvent) -> None:
         dpr = self.devicePixelRatioF()
-        key = _Key(self._key or "", self.width(), self.height(), dpr)
+        key = _Key(self._key or "", self.width(), self.height(), dpr, palette().bg)
         if self._cache is None or self._cache_key != key:
             self._cache = self._compose(self.width(), self.height(), dpr)
             self._cache_key = key

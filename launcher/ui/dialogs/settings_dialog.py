@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -25,6 +26,8 @@ from launcher.domain import prefixes
 from launcher.domain.backup_policy import DEFAULT_EXCLUDES
 from launcher.domain.journal import format_duration
 from launcher.services.tasks import TaskGroup
+from launcher.ui.theme import Appearance, apply_theme
+from launcher.ui.widgets.appearance_picker import AppearancePanel
 
 #: Prompts the user can silence, and how to describe re-enabling them.
 _SILENCEABLE = {
@@ -46,9 +49,11 @@ class SettingsDialog(QDialog):
         self._tasks.finished.connect(lambda _t, r: self._show_key_result(str(r)))
         self._tasks.failed.connect(lambda _t, m: self._show_key_result(m))
         self._verify_token = -1
+        #: Put back on Cancel; changes preview live while the dialog is open.
+        self._original_look = Appearance.from_settings(context.settings)
 
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(680)
         self._setup_ui()
         self._load()
 
@@ -58,6 +63,9 @@ class SettingsDialog(QDialog):
         layout.setSpacing(12)
 
         tabs = QTabWidget()
+        self._appearance = AppearancePanel(self._original_look)
+        self._appearance.changed.connect(self._preview_look)
+        tabs.addTab(self._appearance, "Appearance")
         tabs.addTab(self._build_general(), "General")
         tabs.addTab(self._build_saves(), "Saves")
         tabs.addTab(self._build_artwork(), "Artwork")
@@ -284,8 +292,14 @@ class SettingsDialog(QDialog):
         }
         for key, box in self._prompt_boxes.items():
             values[key] = not box.isChecked()
+        values.update(self._appearance.appearance.to_settings())
         self._ctx.settings.update(values)
         self.accept()
+
+    def _preview_look(self, look: Appearance) -> None:
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            apply_theme(app, look)
 
     # -- API key check -------------------------------------------------
 
@@ -304,6 +318,8 @@ class SettingsDialog(QDialog):
 
     def reject(self) -> None:
         self._tasks.cancel_all()
+        if self._appearance.appearance != self._original_look:
+            self._preview_look(self._original_look)
         super().reject()
 
 

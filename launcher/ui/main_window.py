@@ -10,7 +10,7 @@ import contextlib
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QTextDocument
+from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QShowEvent, QTextDocument
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -37,6 +37,7 @@ from launcher.ui.dialogs.import_dialog import ImportGamesDialog
 from launcher.ui.dialogs.saves_dialog import SavesDialog
 from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
+from launcher.ui.theme import notifier
 from launcher.ui.widgets import log_view
 from launcher.ui.widgets.detail_panel import GameDetailPanel
 from launcher.ui.widgets.journal import JournalView
@@ -61,6 +62,8 @@ class MainWindow(QMainWindow):
         self._logs: dict[str, QTextDocument] = {}
         self._artwork_sticky = StickyChoice()
         self._remove_sticky = StickyChoice()
+        #: The appearance changed while the window was hidden.
+        self._appearance_stale = False
 
         self._setup_ui()
         self._connect()
@@ -194,6 +197,8 @@ class MainWindow(QMainWindow):
         procs.game_output.connect(self._on_game_output)
         procs.game_error.connect(self._on_game_output)
 
+        notifier().changed.connect(self._on_appearance_changed)
+
         tools = self._ctx.prefix_tools
         tools.tool_failed.connect(lambda label, msg: warn(self, label, msg))
         tools.tool_started.connect(
@@ -230,6 +235,18 @@ class MainWindow(QMainWindow):
         if not visible:
             self._detail.set_game(None)
         self._refresh_journal()
+
+    def _on_appearance_changed(self) -> None:
+        """Repaint what draws itself; the stylesheet covers the rest."""
+        if not self.isVisible():
+            # Caught up when shown; a hidden window has nothing to repaint.
+            self._appearance_stale = True
+            return
+        self._appearance_stale = False
+        self._render_library()
+        self._detail.refresh_artwork()
+        self._journal.refresh_artwork()
+        self._journal.viewport().update()
 
     def _refresh_journal(self) -> None:
         """Rebuild the Journal from every game, not just the filtered ones."""
@@ -545,6 +562,11 @@ class MainWindow(QMainWindow):
             self._detail.follow_log()
 
     # -- lifetime ------------------------------------------------------
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if self._appearance_stale:
+            self._on_appearance_changed()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         running = self._ctx.processes.running_games

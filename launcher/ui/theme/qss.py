@@ -59,14 +59,32 @@ QScrollArea > QWidget > QWidget {
 }
 
 QScrollBar:vertical {
-    background-color: $surface;
+    background-color: transparent;
     width: 10px;
-    border-radius: 5px;
+    margin: 2px;
+}
+
+QScrollBar:horizontal {
+    background-color: transparent;
+    height: 10px;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: $border;
+    border-radius: 3px;
+    min-width: 30px;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal,
+QScrollBar::add-page, QScrollBar::sub-page {
+    width: 0;
+    background: none;
 }
 
 QScrollBar::handle:vertical {
     background-color: $border;
-    border-radius: 5px;
+    border-radius: 3px;
     min-height: 30px;
 }
 
@@ -78,12 +96,14 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
     height: 0;
 }
 
-QLineEdit, QSpinBox, QComboBox {
+QLineEdit, QSpinBox, QComboBox, QPlainTextEdit#input {
     background-color: $surface;
     color: $fg_bright;
     border: 1px solid $border;
     border-radius: ${radius}px;
-    padding: 6px 10px;
+    padding: ${button_padding}px 10px;
+    selection-background-color: $accent;
+    selection-color: $on_accent;
     font-size: ${font_md}px;
 }
 
@@ -96,6 +116,39 @@ QComboBox::drop-down {
     width: 24px;
 }
 
+QComboBox::down-arrow {
+    image: url("$icon_down");
+    width: 12px;
+    height: 12px;
+}
+
+QSpinBox::up-button, QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 20px;
+    border: none;
+    background: transparent;
+}
+
+QSpinBox::up-button {
+    subcontrol-position: top right;
+}
+
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+}
+
+QSpinBox::up-arrow {
+    image: url("$icon_up");
+    width: 10px;
+    height: 10px;
+}
+
+QSpinBox::down-arrow {
+    image: url("$icon_down");
+    width: 10px;
+    height: 10px;
+}
+
 QComboBox QAbstractItemView {
     background-color: $surface;
     color: $fg_bright;
@@ -103,12 +156,19 @@ QComboBox QAbstractItemView {
     selection-background-color: $accent;
 }
 
+QToolTip {
+    background-color: $surface;
+    color: $fg_bright;
+    border: 1px solid $border;
+    padding: 5px 8px;
+}
+
 QPushButton {
     background-color: $raised;
     color: $fg;
     border: 1px solid $border;
     border-radius: ${radius}px;
-    padding: 6px 14px;
+    padding: ${button_padding}px 14px;
     font-size: ${font_md}px;
 }
 
@@ -175,7 +235,7 @@ QPushButton#favButton {
 }
 
 QPushButton#favButton:hover {
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: $hover;
     border-radius: ${radius_sm}px;
 }
 
@@ -270,9 +330,14 @@ QCheckBox::indicator {
     background-color: $surface;
 }
 
+QCheckBox::indicator:hover {
+    border-color: $border_hover;
+}
+
 QCheckBox::indicator:checked {
     background-color: $accent;
     border-color: $accent;
+    image: url("$icon_check");
 }
 
 QCheckBox:disabled, QRadioButton:disabled {
@@ -299,7 +364,11 @@ QRadioButton::indicator:hover {
 
 QRadioButton::indicator:checked {
     border: 1px solid $accent;
-    background-color: $accent;
+    background-color: qradialgradient(
+        cx: 0.5, cy: 0.5, radius: 0.5, fx: 0.5, fy: 0.5,
+        stop: 0 $on_accent, stop: 0.32 $on_accent,
+        stop: 0.42 $accent, stop: 1 $accent
+    );
 }
 
 QTreeWidget, QTreeView, QListView {
@@ -361,7 +430,7 @@ QListWidget#gameList::item:hover {
 }
 
 QListWidget#gameList::item:selected {
-    background-color: $raised;
+    background-color: $selection;
     color: $fg_bright;
 }
 
@@ -416,7 +485,7 @@ QLabel#statCaption {
 
 QLabel#statValue {
     color: $fg_bright;
-    font-size: 24px;
+    font-size: ${font_stat}px;
     font-weight: bold;
 }
 
@@ -446,6 +515,38 @@ QToolButton#filterButton[active="true"], QToolButton#favFirstButton:checked {
 QToolButton#filterButton::menu-indicator {
     image: none;
     width: 0;
+}
+
+QPushButton#segment {
+    border-radius: 0;
+    padding: 5px 14px;
+    margin: 0;
+    color: $fg_muted;
+}
+
+QPushButton#segment[position="first"] {
+    border-top-left-radius: ${radius}px;
+    border-bottom-left-radius: ${radius}px;
+}
+
+QPushButton#segment[position="last"] {
+    border-top-right-radius: ${radius}px;
+    border-bottom-right-radius: ${radius}px;
+}
+
+QPushButton#segment[position="middle"], QPushButton#segment[position="last"] {
+    border-left: none;
+}
+
+QPushButton#segment:checked {
+    background-color: $selection;
+    color: $fg_bright;
+    border-color: $accent;
+}
+
+QToolButton#swatch {
+    background: transparent;
+    border: none;
 }
 
 QToolButton#moreButton {
@@ -525,6 +626,23 @@ QGroupBox::title {
 """)
 
 
-def build_stylesheet(palette: Palette = DARK, metrics: Metrics = METRICS) -> str:
-    """Render the stylesheet for the given tokens."""
-    return _TEMPLATE.substitute(**asdict(palette), **asdict(metrics))
+def build_stylesheet(
+    palette: Palette = DARK,
+    metrics: Metrics = METRICS,
+    *,
+    icons: dict[str, str] | None = None,
+    button_padding: int = 6,
+) -> str:
+    """Render the stylesheet for the given tokens.
+
+    Without icons (e.g. in a test) the indicator images point nowhere,
+    which Qt ignores.
+    """
+    values = {**asdict(palette), **asdict(metrics)}
+    if not values["selection"]:
+        values["selection"] = palette.raised
+    values.update(
+        icons or {"icon_check": "", "icon_down": "", "icon_up": ""},
+        button_padding=button_padding,
+    )
+    return _TEMPLATE.substitute(values)

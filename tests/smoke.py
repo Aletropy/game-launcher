@@ -1766,6 +1766,71 @@ def every_feature_dialog_is_reachable_from_the_window() -> None:
 
 
 @test
+def every_theme_builds_a_complete_stylesheet() -> None:
+    from launcher.ui.theme import THEMES, Appearance, build_stylesheet
+    from launcher.ui.theme.appearance import CORNERS, DENSITIES, indicator_icons
+
+    qt_app()
+    for theme_id in THEMES:
+        for corners in CORNERS:
+            look = Appearance(theme=theme_id, corners=corners, density="compact")
+            colours = look.palette()
+            sheet = build_stylesheet(colours, look.metrics(), icons=indicator_icons(colours))
+            assert "$" not in sheet, f"{theme_id}: unfilled placeholder"
+            assert colours.selection, "selection colour not derived"
+    assert set(DENSITIES) == {"compact", "comfortable", "spacious"}
+
+
+@test
+def a_custom_accent_stays_readable() -> None:
+    from launcher.ui.theme import Appearance
+
+    qt_app()
+    light = Appearance(theme="midnight", accent="#eab308").palette()
+    assert light.accent == "#eab308"
+    assert light.on_accent != "#ffffff", "white text on yellow"
+    dark = Appearance(theme="paper", accent="#1e3a8a").palette()
+    assert dark.on_accent == "#ffffff"
+    assert Appearance(text_scale=125).metrics().font_md > Appearance().metrics().font_md
+    assert Appearance(density="spacious").metrics().row_height > 46
+
+
+@test
+def bad_appearance_settings_fall_back() -> None:
+    from launcher.ui.theme import Appearance
+
+    with sandbox() as ctx:
+        ctx.settings.update(
+            {"theme": "nope", "accent": "not a colour", "density": "huge", "text_scale": 7}
+        )
+        assert Appearance.from_settings(ctx.settings) == Appearance()
+        ctx.settings.update({"theme": "paper", "accent": "#ff0000", "text_scale": 110})
+        look = Appearance.from_settings(ctx.settings)
+        assert (look.theme, look.accent, look.text_scale) == ("paper", "#ff0000", 110)
+
+
+@test
+def cancelling_settings_puts_the_old_look_back() -> None:
+    from launcher.ui.dialogs.settings_dialog import SettingsDialog
+    from launcher.ui.theme import Appearance, apply_theme, palette
+
+    app = qt_app()
+    with sandbox() as ctx:
+        apply_theme(app, Appearance())
+        before = palette().bg
+        dialog = SettingsDialog(ctx)
+        dialog._appearance._change(theme="paper")
+        assert palette().bg != before, "no live preview"
+        dialog.reject()
+        assert palette().bg == before
+        dialog = SettingsDialog(ctx)
+        dialog._appearance._change(theme="ember")
+        dialog._save()
+        assert ctx.settings.get_str("theme") == "ember"
+        apply_theme(app, Appearance())
+
+
+@test
 def dialogs_all_construct() -> None:
     from launcher.app.library_controller import LibraryController
     from launcher.domain.models import GameConfig

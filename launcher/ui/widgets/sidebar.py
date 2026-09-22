@@ -42,9 +42,15 @@ from launcher.domain.models import (
     format_playtime,
 )
 from launcher.services.artwork import GRID, ICON, ArtworkService
-from launcher.ui.theme import DARK
+from launcher.ui.theme import metrics, palette
 
-_ICON_SIZE = QSize(34, 34)
+#: Rows shorter than this show the name only.
+_TWO_LINE_HEIGHT = 42
+
+
+def _icon_size() -> QSize:
+    size = metrics().icon_size
+    return QSize(size, size)
 
 
 def _running_dot(colour: str) -> QIcon:
@@ -72,13 +78,14 @@ def letter_tile(name: str, size: QSize, dpr: float = 1.0) -> QPixmap:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor.fromHsl(hue, 90, 70))
+    light = palette().is_light
+    painter.setBrush(QColor.fromHsl(hue, 110 if light else 90, 215 if light else 70))
     painter.drawRoundedRect(0, 0, size.width(), size.height(), 6, 6)
     font = painter.font()
     font.setBold(True)
     font.setPixelSize(round(size.height() * 0.46))
     painter.setFont(font)
-    painter.setPen(QColor.fromHsl(hue, 160, 210))
+    painter.setPen(QColor.fromHsl(hue, 150, 90 if light else 210))
     initial = next((c for c in name if c.isalnum()), "?").upper()
     painter.drawText(
         0, 0, size.width(), size.height(), Qt.AlignmentFlag.AlignCenter, initial
@@ -161,7 +168,7 @@ class LibrarySidebar(QWidget):
 
         self._list = QListWidget()
         self._list.setObjectName("gameList")
-        self._list.setIconSize(_ICON_SIZE)
+        self._list.setIconSize(_icon_size())
         self._list.setUniformItemSizes(False)
         self._list.setAlternatingRowColors(False)
         self._list.currentItemChanged.connect(self._on_current_changed)
@@ -303,13 +310,15 @@ class LibrarySidebar(QWidget):
         """Repopulate the list, keeping the selection where possible."""
         previous = select if select is not None else self.selected_game()
         self._games = games
+        # Density and theme can change between calls.
+        self._list.setIconSize(_icon_size())
 
         self._list.blockSignals(True)
         self._list.clear()
         for game in games:
             item = QListWidgetItem(game.name)
             item.setData(Qt.ItemDataRole.UserRole, game.name)
-            item.setSizeHint(QSize(0, 46))
+            item.setSizeHint(QSize(0, metrics().row_height))
             item.setIcon(QIcon(self._row_icon(game.name)))
             self._decorate(item, game)
             self._list.addItem(item)
@@ -325,10 +334,11 @@ class LibrarySidebar(QWidget):
     def _row_icon(self, name: str) -> QPixmap:
         """The game's icon, a square crop of its cover, or its initial."""
         dpr = self.devicePixelRatioF()
+        size = _icon_size()
         return (
-            self._artwork.pixmap(name, ICON.name, _ICON_SIZE, dpr=dpr)
-            or self._artwork.pixmap(name, GRID.name, _ICON_SIZE, expand=True, dpr=dpr)
-            or letter_tile(name, _ICON_SIZE, dpr)
+            self._artwork.pixmap(name, ICON.name, size, dpr=dpr)
+            or self._artwork.pixmap(name, GRID.name, size, expand=True, dpr=dpr)
+            or letter_tile(name, size, dpr)
         )
 
     def _decorate(self, item: QListWidgetItem, game: Game) -> None:
@@ -340,14 +350,16 @@ class LibrarySidebar(QWidget):
         suffix = ("   " + " ".join(marks)) if marks else ""
 
         detail = self._subtitle(game)
-        item.setText(f"{game.name}{suffix}\n{detail}" if detail else f"{game.name}{suffix}")
+        # Compact rows have room for one line; the details move to the tooltip.
+        two_lines = bool(detail) and metrics().row_height >= _TWO_LINE_HEIGHT
+        item.setText(f"{game.name}{suffix}\n{detail}" if two_lines else f"{game.name}{suffix}")
 
         if not game.executable_exists:
-            item.setForeground(QColor(DARK.fg_muted))
+            item.setForeground(QColor(palette().fg_muted))
             item.setToolTip(f"Executable not found:\n{game.executable}")
         else:
-            item.setForeground(QColor(DARK.fg))
-            item.setToolTip(game.name)
+            item.setForeground(QColor(palette().fg))
+            item.setToolTip(f"{game.name}\n{detail}" if detail else game.name)
 
     @staticmethod
     def _subtitle(game: Game) -> str:

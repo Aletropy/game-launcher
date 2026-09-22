@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication
 from launcher.app.context import AppContext
 from launcher.app.library_controller import LibraryController
 from launcher.ui.main_window import MainWindow
-from launcher.ui.theme import apply_theme
+from launcher.ui.theme import Appearance, apply_theme
 
 
 def build_window(context: AppContext) -> MainWindow:
@@ -29,9 +29,8 @@ def main() -> None:
     app.setApplicationName("Game Launcher")
     app.setApplicationDisplayName("Game Launcher")
     app.setDesktopFileName("game-launcher")
-    apply_theme(app)
-
     context = AppContext.create()
+    apply_theme(app, Appearance.from_settings(context.settings))
     if context.paths.icon.is_file():
         app.setWindowIcon(QIcon(str(context.paths.icon)))
 

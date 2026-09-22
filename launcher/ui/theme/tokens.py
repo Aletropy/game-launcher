@@ -43,6 +43,13 @@ class Palette:
     placeholder_top: str = "#1a1e2e"
     placeholder_bottom: str = "#0f1923"
 
+    #: The selected row: the accent, faintly, over the surface. Derived
+    #: by the appearance when left empty.
+    selection: str = ""
+    #: Scrims and shadows stay dark over artwork in every theme, but a
+    #: light theme needs darker text and softer lines everywhere else.
+    is_light: bool = False
+
 
 @dataclass(frozen=True)
 class Metrics:
@@ -62,6 +69,11 @@ class Metrics:
     font_lg: int = 14
     font_xl: int = 20
     font_display: int = 32
+    font_stat: int = 24
+
+    #: Library rows.
+    row_height: int = 46
+    icon_size: int = 34
 
 
 DARK = Palette()

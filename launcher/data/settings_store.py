@@ -27,6 +27,13 @@ DEFAULTS: dict[str, Any] = {
     "close_to_tray": False,
     "log_max_lines": 5000,
     "fetch_artwork_on_add": True,
+    # Appearance.
+    "theme": "midnight",
+    "accent": "",
+    "corners": "rounded",
+    "density": "comfortable",
+    "text_scale": 100,
+    "font": "",
     # Saves.
     "share_saves_by_default": True,
     "backup_auto": True,

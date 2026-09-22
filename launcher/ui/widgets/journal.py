@@ -36,7 +36,7 @@ from launcher.domain import journal
 from launcher.domain.journal import Day, Session
 from launcher.domain.models import Game, format_last_played
 from launcher.services.artwork import GRID, ICON, ArtworkService
-from launcher.ui.theme import DARK
+from launcher.ui.theme import palette
 from launcher.ui.widgets.hero_banner import HeroBanner
 
 _WEEKS = 26
@@ -48,8 +48,8 @@ _TOP_LIMIT = 5
 
 def _heat_colours() -> list[QColor]:
     """Five steps from an empty cell to the accent colour."""
-    empty = QColor(DARK.raised)
-    accent = QColor(DARK.accent_hover)
+    empty = QColor(palette().raised)
+    accent = QColor(palette().accent_hover)
     steps = [empty]
     for i in range(1, 5):
         t = 0.28 + 0.18 * i
@@ -111,7 +111,6 @@ class Heatmap(QWidget):
         super().__init__(parent)
         self._grid: list[list[Day | None]] = []
         self._peak = 0
-        self._colours = _heat_colours()
         self.setMouseTracking(True)
         width = self._LEFT + _WEEKS * (_CELL + _GAP)
         height = self._TOP + 7 * (_CELL + _GAP) + 26
@@ -147,7 +146,8 @@ class Heatmap(QWidget):
         small = QFont(self.font())
         small.setPointSizeF(max(7.0, small.pointSizeF() * 0.8))
         painter.setFont(small)
-        painter.setPen(QColor(DARK.fg_muted))
+        painter.setPen(QColor(palette().fg_muted))
+        colours = _heat_colours()
 
         for weekday, label in ((0, "Mon"), (2, "Wed"), (4, "Fri")):
             rect = self._cell_rect(0, weekday)
@@ -177,14 +177,14 @@ class Heatmap(QWidget):
                 level = journal.intensity(day.seconds, self._peak)
                 path = QPainterPath()
                 path.addRoundedRect(QRectF(self._cell_rect(week, weekday)), 3, 3)
-                painter.fillPath(path, self._colours[level])
+                painter.fillPath(path, colours[level])
 
         # Legend.
         y = self._TOP + 7 * (_CELL + _GAP) + 8
         x = self.width() - 5 * (_CELL + 2) - 70
-        painter.setPen(QColor(DARK.fg_muted))
+        painter.setPen(QColor(palette().fg_muted))
         painter.drawText(x - 34, y + _CELL - 3, "Less")
-        for level, colour in enumerate(self._colours):
+        for level, colour in enumerate(colours):
             path = QPainterPath()
             path.addRoundedRect(QRectF(x + level * (_CELL + 2), y, _CELL, _CELL), 3, 3)
             painter.fillPath(path, colour)
@@ -285,19 +285,19 @@ class CoverTile(QWidget):
             )
         else:
             gradient = QLinearGradient(0, 0, 0, rect.height())
-            gradient.setColorAt(0, QColor(DARK.placeholder_top))
-            gradient.setColorAt(1, QColor(DARK.placeholder_bottom))
+            gradient.setColorAt(0, QColor(palette().placeholder_top))
+            gradient.setColorAt(1, QColor(palette().placeholder_bottom))
             painter.fillRect(rect, gradient)
             initials = "".join(w[0] for w in self._game.name.split()[:2]).upper()
             font = QFont(self.font())
             font.setPointSize(22)
             font.setBold(True)
             painter.setFont(font)
-            painter.setPen(QColor(DARK.link))
+            painter.setPen(QColor(palette().link))
             painter.drawText(rect, int(Qt.AlignmentFlag.AlignCenter), initials)
         painter.restore()
 
-        border = QColor(DARK.link if self._hover else DARK.border)
+        border = QColor(palette().link if self._hover else palette().border)
         painter.setPen(border)
         painter.drawPath(path)
 
@@ -305,9 +305,9 @@ class CoverTile(QWidget):
         name = metrics.elidedText(
             self._game.name, Qt.TextElideMode.ElideRight, self.width()
         )
-        painter.setPen(QColor(DARK.fg_bright))
+        painter.setPen(QColor(palette().fg_bright))
         painter.drawText(0, int(rect.height()) + 18, name)
-        painter.setPen(QColor(DARK.fg_muted))
+        painter.setPen(QColor(palette().fg_muted))
         painter.drawText(0, int(rect.height()) + 36, self._caption)
 
 
@@ -362,10 +362,10 @@ class TopGames(QWidget):
             if pix is not None:
                 painter.drawPixmap(box, pix, QRectF(pix.rect()))
             else:
-                painter.fillPath(clip, QColor(DARK.raised))
+                painter.fillPath(clip, QColor(palette().raised))
             painter.restore()
 
-            painter.setPen(QColor(DARK.fg_bright))
+            painter.setPen(QColor(palette().fg_bright))
             painter.drawText(
                 QRect(40, y, label_w - 10, self._ROW),
                 int(Qt.AlignmentFlag.AlignVCenter),
@@ -374,17 +374,17 @@ class TopGames(QWidget):
 
             track = QPainterPath()
             track.addRoundedRect(QRectF(bar_x, y + 15, bar_max, 10), 5, 5)
-            painter.fillPath(track, QColor(DARK.raised))
+            painter.fillPath(track, QColor(palette().raised))
             fill = QPainterPath()
             fill.addRoundedRect(
                 QRectF(bar_x, y + 15, max(10, bar_max * seconds / peak), 10), 5, 5
             )
             gradient = QLinearGradient(bar_x, 0, bar_x + bar_max, 0)
-            gradient.setColorAt(0, QColor(DARK.accent))
-            gradient.setColorAt(1, QColor(DARK.accent_hover))
+            gradient.setColorAt(0, QColor(palette().accent))
+            gradient.setColorAt(1, QColor(palette().accent_hover))
             painter.fillPath(fill, gradient)
 
-            painter.setPen(QColor(DARK.fg_muted))
+            painter.setPen(QColor(palette().fg_muted))
             painter.drawText(
                 QRect(bar_x + bar_max + 8, y, value_w, self._ROW),
                 int(Qt.AlignmentFlag.AlignVCenter),
