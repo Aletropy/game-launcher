@@ -206,6 +206,7 @@ per area, loaded by the same runner so CI needs one command:
 | Add / import | `Ctrl+N` / `Ctrl+I` |
 | Edit / settings | `Ctrl+E` / `Ctrl+,` |
 | Refresh | `F5` |
+| Quit entirely | `Ctrl+Q` |
 
 Playtime is recorded per session. A session shorter than 20 seconds is
 treated as a failed launch and does not count, so a game that crashes on
@@ -235,7 +236,9 @@ configuration, and Open prefix. Game output is also kept in
 **Collections.** The ⋯ menu holds Tags & notes (comma-separated tags,
 free-form notes) and Hide. Search finds games by tag, Filters offers
 every tag in use and a Show-hidden toggle, and Settings → Data can clear
-them. The Covers button above the list switches rows for a cover grid.
+them. The **Covers** button above the library swaps the list for a large,
+fast cover grid; clicking a cover returns to the library on that game,
+double-clicking plays it.
 
 **Sessions.** The ⋯ menu's Sessions… lists one game's sessions with
 their dates, lengths and outcomes. Delete, correct or manually add a

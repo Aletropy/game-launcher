@@ -26,6 +26,7 @@ DEFAULTS: dict[str, Any] = {
     "confirm_remove": True,
     "close_to_tray": False,
     "close_to_tray_asked": False,
+    "library_covers": False,
     "log_max_lines": 5000,
     "fetch_artwork_on_add": True,
     # Appearance.

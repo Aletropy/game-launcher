@@ -25,21 +25,33 @@ def register(*, test, qt_app, sandbox, pump):
             assert shortcuts.slug("Warhammer 40,000!") == "warhammer-40-000"
 
     @test
-    def covers_view_toggles_layout() -> None:
+    def covers_grid_picks_and_returns() -> None:
+        from PySide6.QtGui import QShortcut
+
         from launcher.app.main import build_window
         from launcher.domain.models import GameConfig
 
         qt_app()
         with sandbox() as ctx:
             ctx.games.add(GameConfig(name="Alpha", executable="/g/a.exe"))
+            ctx.games.add(GameConfig(name="Beta", executable="/g/b.exe"))
             window = build_window(ctx)
-            sidebar = window._sidebar
-            assert not sidebar.covers
-            sidebar.set_covers(True)
-            assert sidebar.covers
-            assert "Alpha" in (sidebar.selected_game() or "")
-            sidebar.set_covers(False)
-            assert not sidebar.covers
+            window.show()
+            assert not window.covers
+            window.set_covers(True)
+            assert window.covers
+            assert window._covers_grid.count() == 2
+            assert ctx.settings.get_bool("library_covers")
+
+            window._on_cover_chosen("Beta")
+            assert not window.covers
+            assert window._sidebar.selected_game() == "Beta"
+            assert not ctx.settings.get_bool("library_covers")
+
+            keys = {
+                shortcut.key().toString() for shortcut in window.findChildren(QShortcut)
+            }
+            assert "Ctrl+Q" in keys, keys
             window.close()
 
     @test

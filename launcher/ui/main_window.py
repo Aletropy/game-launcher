@@ -51,6 +51,7 @@ from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.theme import notifier
 from launcher.ui.tray import TrayController
 from launcher.ui.widgets import log_view
+from launcher.ui.widgets.covers_grid import CoversGrid
 from launcher.ui.widgets.detail_panel import GameDetailPanel
 from launcher.ui.widgets.friends import FriendsView
 from launcher.ui.widgets.journal import JournalView
@@ -122,6 +123,7 @@ class MainWindow(QMainWindow):
 
         self.setStatusBar(QStatusBar())
         self._restore_view_mode()
+        self._restore_covers()
         self._install_shortcuts()
 
     def _build_top_bar(self) -> QFrame:
@@ -186,6 +188,18 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(12, 8, 12, 0)
+        toolbar.addStretch()
+        self._covers_btn = QPushButton("Covers")
+        self._covers_btn.setObjectName("viewToggle")
+        self._covers_btn.setCheckable(True)
+        self._covers_btn.setFixedHeight(32)
+        self._covers_btn.setToolTip("Browse every cover, large")
+        self._covers_btn.toggled.connect(self.set_covers)
+        toolbar.addWidget(self._covers_btn)
+        layout.addLayout(toolbar)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(1)
@@ -203,7 +217,14 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([300, 980])
+        self._library_splitter = splitter
         layout.addWidget(splitter)
+
+        self._covers_grid = CoversGrid(self._ctx.artwork)
+        self._covers_grid.game_chosen.connect(self._on_cover_chosen)
+        self._covers_grid.game_activated.connect(self._launch_game)
+        self._covers_grid.hide()
+        layout.addWidget(self._covers_grid, stretch=1)
         return page
 
     def _build_journal_view(self) -> QWidget:
@@ -282,6 +303,7 @@ class MainWindow(QMainWindow):
             (QKeySequence("Ctrl+R"), self._lib.reload),
             (QKeySequence("F5"), self._lib.reload),
             (QKeySequence("Ctrl+P"), self._play_selected),
+            (QKeySequence("Ctrl+Q"), self.request_quit),
         )
         for keys, handler in shortcuts:
             QShortcut(keys, self).activated.connect(handler)
@@ -299,6 +321,8 @@ class MainWindow(QMainWindow):
         self._sidebar.set_favorites_first(self._lib.favorites_first)
         for name in self._ctx.processes.running_games:
             self._sidebar.set_running(name, True)
+        if self._covers_grid.isVisible():
+            self._covers_grid.refresh(visible, set(self._ctx.processes.running_games))
         if not visible:
             self._detail.set_game(None)
         self._refresh_journal()
@@ -352,6 +376,34 @@ class MainWindow(QMainWindow):
     def _on_sort_changed(self, value: str) -> None:
         with contextlib.suppress(ValueError):
             self._lib.set_sort_order(SortOrder(value))
+
+    @property
+    def covers(self) -> bool:
+        """Whether the library shows the cover grid."""
+        return self._covers_grid.isVisible()
+
+    def set_covers(self, enabled: bool) -> None:
+        """Swap the list/detail split for the cover grid and back."""
+        if self._covers_btn.isChecked() != enabled:
+            self._covers_btn.setChecked(enabled)
+        self._ctx.settings.set("library_covers", enabled)
+        self._library_splitter.setVisible(not enabled)
+        self._covers_grid.setVisible(enabled)
+        if enabled:
+            self._covers_grid.refresh(
+                self._lib.visible_games(), set(self._ctx.processes.running_games)
+            )
+            self._covers_grid.setFocus()
+
+    def _on_cover_chosen(self, name: str) -> None:
+        """A cover was clicked: back to the library, on that game."""
+        self.set_covers(False)
+        self._switch_view(_LIBRARY_VIEW)
+        self._open_in_library(name)
+
+    def _restore_covers(self) -> None:
+        if self._ctx.settings.get_bool("library_covers"):
+            self.set_covers(True)
 
     def _switch_view(self, index: int) -> None:
         self._views.setCurrentIndex(index)
