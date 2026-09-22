@@ -1,1 +1,1 @@
-"""Game launcher with PySide6 GUI."""
+"""Milso Launcher with PySide6 GUI."""

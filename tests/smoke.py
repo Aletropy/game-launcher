@@ -1676,7 +1676,7 @@ def proton_prefixes_run_tools_through_the_launcher_script() -> None:
     """A Proton prefix can only be opened by the Proton that built it.
 
     That Proton lives inside the Steam Flatpak, so the tool has to go
-    through game-launcher.sh rather than the host's wine.
+    through milso-launcher.sh rather than the host's wine.
     """
     from launcher.services import prefix_tools as pt
 

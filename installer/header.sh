@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# Game Launcher @@VERSION@@ — self-extracting installer.
+# Milso Launcher @@VERSION@@ — self-extracting installer.
 #
-#   ./game-launcher-@@VERSION@@.run                 install or upgrade
-#   ./game-launcher-@@VERSION@@.run --target DIR    install into DIR
-#   ./game-launcher-@@VERSION@@.run --yes           no questions
-#   ./game-launcher-@@VERSION@@.run --check         check dependencies only
-#   ./game-launcher-@@VERSION@@.run --extract DIR   unpack without installing
+#   ./milso-launcher-@@VERSION@@.run                 install or upgrade
+#   ./milso-launcher-@@VERSION@@.run --target DIR    install into DIR
+#   ./milso-launcher-@@VERSION@@.run --yes           no questions
+#   ./milso-launcher-@@VERSION@@.run --check         check dependencies only
+#   ./milso-launcher-@@VERSION@@.run --extract DIR   unpack without installing
 #
 # Run it once. It unpacks itself, upgrades an existing installation in
 # place if it finds one, and sets up the venv, command and desktop entry.
@@ -18,8 +18,8 @@ set -uo pipefail
 
 VERSION="@@VERSION@@"
 PAYLOAD_SHA256="@@PAYLOAD_SHA256@@"
-PACKAGE_NAME="game-launcher-@@VERSION@@"
-APP_ID="game-launcher"
+PACKAGE_NAME="milso-launcher-@@VERSION@@"
+APP_ID="milso-launcher"
 
 DEFAULT_TARGET="${XDG_DATA_HOME:-$HOME/.local/share}/$APP_ID"
 BIN_SHIM="${XDG_BIN_HOME:-$HOME/.local/bin}/$APP_ID"
@@ -117,7 +117,7 @@ extract_payload() {
 looks_like_install() {
     local dir="$1"
     [ -n "$dir" ] && [ -d "$dir" ] || return 1
-    [ -f "$dir/game-launcher.sh" ] || return 1
+    [ -f "$dir/milso-launcher.sh" ] || [ -f "$dir/game-launcher.sh" ] || return 1
     [ -d "$dir/launcher" ] || [ -d "$dir/games" ]
 }
 
@@ -258,7 +258,7 @@ sync_tree() {
     ok "application source"
 
     local item
-    for item in tests game-launcher.sh install.sh repair-prefix.sh \
+    for item in tests milso-launcher.sh install.sh repair-prefix.sh \
                 migrate-from-flatpak-prefix.sh migrate-saves.sh \
                 steam_flatpak_saves.sh steam_native_saves.sh \
                 run.py run.sh requirements.txt pyproject.toml README.md icon.png
@@ -267,6 +267,8 @@ sync_tree() {
         rm -rf "$target/$item"
         cp -r "$source/$item" "$target/" || return 1
     done
+    # Remove legacy script name if upgrading from game-launcher.
+    rm -f "$target/game-launcher.sh"
     ok "scripts, tests and documentation"
 
     # A fresh install needs a games directory; an existing one keeps its own.
@@ -284,7 +286,7 @@ sync_tree() {
     find "$target" -type d -name '__pycache__' -prune -exec rm -rf {} + 2>/dev/null
 
     local script
-    for script in game-launcher.sh install.sh repair-prefix.sh \
+    for script in milso-launcher.sh install.sh repair-prefix.sh \
                   migrate-from-flatpak-prefix.sh migrate-saves.sh \
                   steam_flatpak_saves.sh steam_native_saves.sh run.sh
     do
@@ -323,7 +325,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-printf '%sGame Launcher %s%s\n' "$C_B" "$VERSION" "$C_OFF"
+printf '%sMilso Launcher %s%s\n' "$C_B" "$VERSION" "$C_OFF"
 
 WORKDIR="$(mktemp -d)" || exit 1
 trap 'rm -rf "$WORKDIR"' EXIT

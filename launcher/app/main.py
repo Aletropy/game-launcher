@@ -27,9 +27,9 @@ def build_window(context: AppContext) -> MainWindow:
 
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setApplicationName("Game Launcher")
-    app.setApplicationDisplayName("Game Launcher")
-    app.setDesktopFileName("game-launcher")
+    app.setApplicationName("Milso Launcher")
+    app.setApplicationDisplayName("Milso Launcher")
+    app.setDesktopFileName("milso-launcher")
     context = AppContext.create()
     # The user's themes first, so a saved choice of one of them is valid.
     CustomThemeStore(context.paths.themes_dir).load_all()

@@ -2,7 +2,7 @@
 #
 # Build a release archive that installs on any machine.
 #
-#   ./package.sh            build dist/game-launcher-<version>.tar.gz
+#   ./package.sh            build dist/milso-launcher-<version>.tar.gz
 #   ./package.sh --no-check skip the test and lint gate
 #   ./package.sh --clean    remove dist/ and exit
 #
@@ -10,7 +10,7 @@
 # What stays out: the virtualenv, Wine prefixes, artwork, save backups,
 # caches, and your own games.
 #
-# game-launcher.sh is copied in as a plain executable file and is never
+# milso-launcher.sh is copied in as a plain executable file and is never
 # bundled or rewritten: it rewrites its own source with sed on "$0", so
 # it has to stay a readable file on disk to work at all.
 
@@ -40,7 +40,7 @@ head_() { printf '\n%s\n' "$1" >&2; }
 PAYLOAD=(
     launcher
     tests
-    game-launcher.sh
+    milso-launcher.sh
     install.sh
     repair-prefix.sh
     migrate-from-flatpak-prefix.sh
@@ -65,7 +65,7 @@ USER_DATA_DIRS=(
 
 # Scripts that must arrive executable.
 EXECUTABLES=(
-    game-launcher.sh
+    milso-launcher.sh
     install.sh
     repair-prefix.sh
     migrate-from-flatpak-prefix.sh
@@ -187,21 +187,21 @@ verify_staging() {
     [ "$found" -eq 0 ] && ok "no private or machine-specific files"
     [ "$found" -eq 0 ] || return 1
 
-    # game-launcher.sh must arrive intact, executable and parseable.
-    if ! cmp -s "$SOURCE_DIR/game-launcher.sh" "$staging/game-launcher.sh"; then
-        err "game-launcher.sh was modified during packaging"
+    # milso-launcher.sh must arrive intact, executable and parseable.
+    if ! cmp -s "$SOURCE_DIR/milso-launcher.sh" "$staging/milso-launcher.sh"; then
+        err "milso-launcher.sh was modified during packaging"
         return 1
     fi
-    ok "game-launcher.sh byte-identical (never bundled or rewritten)"
+    ok "milso-launcher.sh byte-identical (never bundled or rewritten)"
 
-    if [ ! -x "$staging/game-launcher.sh" ]; then
-        err "game-launcher.sh is not executable"
+    if [ ! -x "$staging/milso-launcher.sh" ]; then
+        err "milso-launcher.sh is not executable"
         return 1
     fi
-    if bash -n "$staging/game-launcher.sh" 2>/dev/null; then
-        ok "game-launcher.sh parses"
+    if bash -n "$staging/milso-launcher.sh" 2>/dev/null; then
+        ok "milso-launcher.sh parses"
     else
-        err "game-launcher.sh has a syntax error"
+        err "milso-launcher.sh has a syntax error"
         return 1
     fi
 
@@ -335,7 +335,7 @@ build_bundle() {
     # Plain text, because the person opening this may be reading it in a
     # mail client with no Markdown and no terminal yet.
     cat > "$root/INSTALL.txt" <<EOF
-Game Launcher $VERSION
+Milso Launcher $VERSION
 ======================
 
 A launcher for running Windows games through Proton inside the Steam
@@ -355,7 +355,7 @@ INSTALL
          ./$name.run
 
 That is all. It checks what it needs, creates its own Python
-environment, and adds a "game-launcher" command and a menu entry.
+environment, and adds a "milso-launcher" command and a menu entry.
 It never asks for root and installs nothing system-wide.
 
 If you already have an older copy, run it from inside that folder and
@@ -549,17 +549,17 @@ test_run_installer() {
         return 1
     fi
 
-    if [ -x "$scratch/unpacked/game-launcher.sh" ]; then
-        ok "game-launcher.sh is executable inside the installer"
+    if [ -x "$scratch/unpacked/milso-launcher.sh" ]; then
+        ok "milso-launcher.sh is executable inside the installer"
     else
-        err "game-launcher.sh lost its executable bit"
+        err "milso-launcher.sh lost its executable bit"
         return 1
     fi
-    if ! cmp -s "$SOURCE_DIR/game-launcher.sh" "$scratch/unpacked/game-launcher.sh"; then
-        err "game-launcher.sh differs from the original"
+    if ! cmp -s "$SOURCE_DIR/milso-launcher.sh" "$scratch/unpacked/milso-launcher.sh"; then
+        err "milso-launcher.sh differs from the original"
         return 1
     fi
-    ok "game-launcher.sh byte-identical through the installer"
+    ok "milso-launcher.sh byte-identical through the installer"
 
     # A corrupt payload must be refused rather than half-installed.
     local tampered="$scratch/tampered.run"
@@ -595,10 +595,10 @@ test_install() {
         err "install.sh lost its executable bit"
         return 1
     fi
-    if [ -x "$extracted/game-launcher.sh" ]; then
-        ok "game-launcher.sh is executable after extraction"
+    if [ -x "$extracted/milso-launcher.sh" ]; then
+        ok "milso-launcher.sh is executable after extraction"
     else
-        err "game-launcher.sh lost its executable bit"
+        err "milso-launcher.sh lost its executable bit"
         return 1
     fi
 
@@ -653,7 +653,7 @@ esac
 
 VERSION="$(read_version)"
 [ -n "$VERSION" ] || VERSION="0.0.0"
-NAME="game-launcher-$VERSION"
+NAME="milso-launcher-$VERSION"
 
 printf 'Packaging %s\n' "$NAME"
 

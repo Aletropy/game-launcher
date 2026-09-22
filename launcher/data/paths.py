@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 class Paths:
     """Where the launcher keeps everything."""
 
-    #: The launcher installation, containing game-launcher.sh and games/.
+    #: The launcher installation, containing milso-launcher.sh and games/.
     base: Path
     #: Per-user configuration and state.
     config: Path
@@ -28,7 +28,9 @@ class Paths:
     @classmethod
     def default(cls) -> Paths:
         """The real locations, honouring the XDG variables."""
+        import contextlib
         import os
+        import shutil
 
         config_home = Path(
             os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
@@ -36,10 +38,32 @@ class Paths:
         data_home = Path(
             os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
         )
+        config = config_home / "milso-launcher"
+        data = data_home / "milso-launcher"
+        # One-time migration from the old "launcher" name.
+        legacy_config = config_home / "launcher"
+        legacy_data = data_home / "launcher"
+        for legacy, new in ((legacy_config, config), (legacy_data, data)):
+            if legacy.is_dir():
+                if not new.exists():
+                    with contextlib.suppress(OSError):
+                        shutil.copytree(legacy, new, dirs_exist_ok=True)
+                else:
+                    # New already exists (e.g. created on first run); copy any
+                    # missing files from the legacy location.
+                    with contextlib.suppress(OSError):
+                        for item in legacy.rglob("*"):
+                            if item.is_file():
+                                rel = item.relative_to(legacy)
+                                target = new / rel
+                                if not target.exists():
+                                    target.parent.mkdir(parents=True, exist_ok=True)
+                                    with contextlib.suppress(OSError):
+                                        shutil.copy2(item, target)
         return cls(
             base=PROJECT_ROOT,
-            config=config_home / "launcher",
-            data=data_home / "launcher",
+            config=config,
+            data=data,
         )
 
     @classmethod
@@ -55,7 +79,7 @@ class Paths:
 
     @property
     def launcher_script(self) -> Path:
-        return self.base / "game-launcher.sh"
+        return self.base / "milso-launcher.sh"
 
     @property
     def prefix_name_file(self) -> Path:

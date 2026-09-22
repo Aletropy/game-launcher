@@ -13,7 +13,7 @@ import urllib.request
 from typing import Any
 
 TIMEOUT = 5.0
-_HEADERS = {"User-Agent": "GameLauncher-Friends/1", "Accept": "application/json"}
+_HEADERS = {"User-Agent": "MilsoLauncher-Friends/1", "Accept": "application/json"}
 
 
 class FriendsError(Exception):

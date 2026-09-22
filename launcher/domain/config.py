@@ -16,7 +16,7 @@ _QUOTED_RE = re.compile(r'^"(?P<inner>(?:[^"\\]|\\.)*)"$')
 _ITEM_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 # Characters bash still expands inside double quotes; they must be backslash
-# escaped because game-launcher.sh sources these files.
+# escaped because milso-launcher.sh sources these files.
 _ESCAPE_RE = re.compile(r'([\\"`$])')
 # Only the sequences we write are unescaped again, so a lone backslash in an
 # older hand-written conf survives untouched.

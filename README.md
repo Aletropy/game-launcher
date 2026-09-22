@@ -1,4 +1,4 @@
-# Game Launcher
+# Milso Launcher
 
 A PySide6 launcher for running Windows games through Proton inside the
 Steam Flatpak container.
@@ -8,18 +8,18 @@ Steam Flatpak container.
 One file, run once:
 
 ```bash
-./game-launcher-2.1.0.run             # install, or upgrade in place
-./game-launcher-2.1.0.run --target DIR
-./game-launcher-2.1.0.run --yes       # no questions
-./game-launcher-2.1.0.run --check     # dependencies only, changes nothing
-./game-launcher-2.1.0.run --extract DIR
+./milso-launcher-2.1.0.run             # install, or upgrade in place
+./milso-launcher-2.1.0.run --target DIR
+./milso-launcher-2.1.0.run --yes       # no questions
+./milso-launcher-2.1.0.run --check     # dependencies only, changes nothing
+./milso-launcher-2.1.0.run --extract DIR
 ```
 
 It verifies its own payload, unpacks itself, finds an existing
 installation if there is one, and runs the setup. It picks the target in
 this order: `--target`, an installation in the current directory, the
-one the `game-launcher` command already points at, then
-`~/.local/share/game-launcher`.
+one the `milso-launcher` command already points at, then
+`~/.local/share/milso-launcher`.
 
 **Upgrading an existing project** keeps everything that is yours:
 `games/`, `Prefix/`, `prefixes/`, `backups/`, `launcher/artwork/`,
@@ -42,7 +42,7 @@ If you already have the source tree, `install.sh` does the same setup:
 
 The installer checks for Python, bash, the Steam Flatpak and the optional
 extras (gamescope, winetricks), creates `.venv`, installs PySide6, adds a
-`game-launcher` command to `~/.local/bin` and a desktop entry so the app
+`milso-launcher` command to `~/.local/bin` and a desktop entry so the app
 appears in your menu. Nothing is installed system-wide and nothing needs
 root. Uninstalling leaves your games, prefixes, artwork and settings
 alone.
@@ -68,7 +68,7 @@ The bundle is what to send someone directly. Mail and chat clients
 routinely block executables, so it wraps the `.run` in a `.tar.gz`
 alongside a plain-text `INSTALL.txt`, the source archive, the README and
 `SHA256SUMS`. The instructions say to `chmod +x` the installer, and it
-also runs as `bash game-launcher-<version>.run`, so a transport that
+also runs as `bash milso-launcher-<version>.run`, so a transport that
 drops the executable bit cannot break it.
 
 The `.run` is the release archive appended to `installer/header.sh`
@@ -91,7 +91,7 @@ an empty `games/` folder. It leaves out the virtualenv, Wine prefixes,
 artwork, save backups, caches and your own games, and a check refuses to
 build if any of those sneak in.
 
-`game-launcher.sh` ships as a plain executable file and is verified
+`milso-launcher.sh` ships as a plain executable file and is verified
 byte-identical to the original. It is never bundled or rewritten: it
 rewrites its own source with `sed` on `"$0"`, so it has to stay a
 readable file on disk to work at all.
@@ -104,17 +104,17 @@ byte-identical.
 To install elsewhere:
 
 ```bash
-tar xzf game-launcher-2.1.0.tar.gz
-cd game-launcher-2.1.0
+tar xzf milso-launcher-2.1.0.tar.gz
+cd milso-launcher-2.1.0
 ./install.sh
 ```
 
 Games can also be launched straight from the shell:
 
 ```bash
-./game-launcher.sh "Schedule I"
-./game-launcher.sh --dry-run "Schedule I"   # print the resolved config, run nothing
-./game-launcher.sh -exec /path/to/game.exe
+./milso-launcher.sh "Schedule I"
+./milso-launcher.sh --dry-run "Schedule I"   # print the resolved config, run nothing
+./milso-launcher.sh -exec /path/to/game.exe
 ```
 
 `--dry-run` prints the prefix, Proton path, app id and environment a
@@ -128,7 +128,7 @@ launcher/
   domain/      models and rules. No Qt, no I/O, no globals.
     models.py    GameConfig, GameStats, Game, sorting and formatting
     config.py    reading and writing bash .conf files
-    prefixes.py  prefix resolution, mirroring game-launcher.sh
+    prefixes.py  prefix resolution, mirroring milso-launcher.sh
     journal.py   play sessions: heatmap, streaks, totals
     backup_policy  what backups leave out and how long they are kept
   data/        persistence, each taking a Paths in its constructor
@@ -212,7 +212,7 @@ an image can also be dragged onto the detail panel.
 play history, total playtime, last played and launch counts, favourites,
 artwork and logs, for one game or all of them, and can forget games no
 longer in the library. A copy of the database is saved to
-`~/.local/share/launcher/state-backups/` first; the last five are kept.
+`~/.local/share/milso-launcher/state-backups/` first; the last five are kept.
 
 **Appearance** (Settings → Appearance) has seven themes: Midnight,
 Harbour, Nebula, Frost, Ember, Pitch Black and the light Paper. You can
@@ -227,7 +227,7 @@ Next, fine-tune each of the twenty colours by swatch or hex. Last, name
 it. A miniature launcher built from the real widgets previews every
 change, and a readability check rates text against its background with
 WCAG contrast ratios, warning before you save something hard to read.
-Themes are JSON files in `~/.config/launcher/themes/`: Edit, Delete,
+Themes are JSON files in `~/.config/milso-launcher/themes/`: Edit, Delete,
 Import and Export work on them from the same page.
 
 **Settings** is a sidebar of pages: Appearance, Library, Artwork, Saves
@@ -285,7 +285,7 @@ save folder look empty in-game, so it is refused.
 replace a symlink with a real directory, quietly splitting your saves.
 The links are therefore verified before every launch; anything written
 into a replacement is merged back into the store and the link restored.
-Launching `./game-launcher.sh` directly bypasses that check.
+Launching `./milso-launcher.sh` directly bypasses that check.
 
 **Every prefix is shared by default.** On startup, before a game starts
 and after it exits (a new prefix only exists after its first run), any
@@ -362,7 +362,7 @@ registry; it will look freshly installed. Use the ⋯ → Saves menu, or
 `repair-prefix.sh`, to move save data.
 
 `launcher/domain/prefixes.py` and `resolve_conf_overrides()` in
-`game-launcher.sh` implement the same rules, and a smoke test runs both
+`milso-launcher.sh` implement the same rules, and a smoke test runs both
 to prove they still agree.
 
 ## Artwork storage
@@ -419,16 +419,16 @@ Friends. To develop against a local server, set the address with an
 environment variable:
 
 ```bash
-LAUNCHER_FRIENDS_SERVER=http://127.0.0.1:8765 ./run.sh
+MILSO_FRIENDS_SERVER=http://127.0.0.1:8765 ./run.sh
 ```
 
 The server uses plain HTTP, so run it only on a network you trust.
 Tokens are stored hashed on the server, and in
-`~/.config/launcher/friends.json` (mode 0600) on each client.
+`~/.config/milso-launcher/friends.json` (mode 0600) on each client.
 
 ## Per-game configuration
 
-`games/<name>.conf` is sourced by `game-launcher.sh`. The filename stem
+`games/<name>.conf` is sourced by `milso-launcher.sh`. The filename stem
 is the game's identity — renaming in the launcher moves the config, the
 artwork, the favourite and the playtime together.
 
@@ -456,5 +456,5 @@ backticks are safe even though the file is `source`d.
 | Prefixes | `Prefix/`, `prefixes/<game>/`, or wherever you point them |
 | Shared saves | `Saves/` |
 | Save backups | `backups/saves/<timestamp>/` |
-| Preferences | `~/.config/launcher/settings.json` |
-| Playtime, sessions, favourites | `~/.local/share/launcher/state.db` |
+| Preferences | `~/.config/milso-launcher/settings.json` |
+| Playtime, sessions, favourites | `~/.local/share/milso-launcher/state.db` |

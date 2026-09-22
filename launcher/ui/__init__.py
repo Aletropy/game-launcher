@@ -1,1 +1,1 @@
-"""UI components for the game launcher."""
+"""UI components for Milso Launcher."""

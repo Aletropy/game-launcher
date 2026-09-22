@@ -2,7 +2,7 @@
 
 A game either uses the shared prefix (the historical behaviour) or names
 its own. The rules here mirror ``resolve_conf_overrides`` in
-game-launcher.sh exactly; if one changes, the other must too.
+milso-launcher.sh exactly; if one changes, the other must too.
 
 Nothing here creates a directory. Creation stays in the shell script, so
 there is one place that decides when a prefix comes into existence.

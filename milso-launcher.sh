@@ -182,7 +182,7 @@ run_game() {
 
     if ! mkdir -p "$WINEPREFIX" 2>/dev/null; then
         echo "Failed to create prefix: $WINEPREFIX" >&2
-        echo "If it is outside the launcher or home folder, the Steam" >&2
+        echo "If it is outside the Milso Launcher or home folder, the Steam" >&2
         echo "Flatpak may not be able to see that path." >&2
         exit 1
     fi
@@ -279,7 +279,7 @@ else
     fi
 
     if [ -z "$1" ]; then
-        echo "Usage: launcher [--dry-run] <game> | -exec <exe>"
+        echo "Usage: milso-launcher [--dry-run] <game> | -exec <exe>"
         echo "Available games:"
         ls "$BASE_DIR/games" 2>/dev/null | sed 's/\.conf//'
         exit 1

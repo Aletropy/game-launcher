@@ -223,7 +223,7 @@ class PrefixToolsService(QObject):
     @staticmethod
     def _environment(path: Path, wine: Path | None) -> QProcessEnvironment:
         env = QProcessEnvironment.systemEnvironment()
-        # game-launcher.sh wants the directory that contains pfx/, and
+        # milso-launcher.sh wants the directory that contains pfx/, and
         # derives STEAM_COMPAT_DATA_PATH from it; the host wine wants the
         # pfx directory itself.
         env.insert(

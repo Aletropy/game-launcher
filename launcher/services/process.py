@@ -23,7 +23,7 @@ class _Session:
 
 
 class ProcessService(QObject):
-    """Launches games through game-launcher.sh and tracks their lifetime."""
+    """Launches games through milso-launcher.sh and tracks their lifetime."""
 
     game_started = Signal(str)
     #: name, exit code
@@ -113,7 +113,7 @@ class ProcessService(QObject):
             self._sessions.pop(game_name, None)
             self.game_error.emit(
                 game_name,
-                f"Failed to start game-launcher.sh: {session.process.errorString()}",
+                f"Failed to start milso-launcher.sh: {session.process.errorString()}",
             )
             self.game_finished.emit(game_name, -1)
         else:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install (or remove) the game launcher for the current user.
+# Install (or remove) Milso Launcher for the current user.
 #
 #   ./install.sh              install
 #   ./install.sh --uninstall  remove the desktop entry and command
@@ -11,8 +11,8 @@
 set -uo pipefail
 
 LAUNCHER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_ID="game-launcher"
-APP_NAME="Game Launcher"
+APP_ID="milso-launcher"
+APP_NAME="Milso Launcher"
 
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
@@ -81,7 +81,7 @@ check_dependencies() {
         FAILED=1
     fi
 
-    # The launcher runs games inside the Steam Flatpak container.
+    # Milso Launcher runs games inside the Steam Flatpak container.
     if command -v flatpak >/dev/null 2>&1; then
         if flatpak info com.valvesoftware.Steam >/dev/null 2>&1; then
             ok "Steam Flatpak installed"
@@ -98,7 +98,7 @@ check_dependencies() {
         fi
     else
         warn "flatpak not found — games cannot be launched without it"
-        note "The launcher runs games inside the Steam Flatpak container."
+        note "Milso Launcher runs games inside the Steam Flatpak container."
     fi
 
     # Optional extras.
@@ -168,6 +168,11 @@ EOF
     chmod +x "$BIN_DIR/$APP_ID"
     ok "command installed: $BIN_DIR/$APP_ID"
 
+    # Remove legacy command from the previous name.
+    if [ "$APP_ID" != "game-launcher" ] && [ -f "$BIN_DIR/game-launcher" ]; then
+        rm -f "$BIN_DIR/game-launcher" && ok "removed legacy command: $BIN_DIR/game-launcher"
+    fi
+
     case ":$PATH:" in
         *":$BIN_DIR:"*) ;;
         *)
@@ -201,7 +206,7 @@ install_desktop_entry() {
 Type=Application
 Version=1.0
 Name=$APP_NAME
-GenericName=Game Launcher
+GenericName=Milso Launcher
 Comment=Run Windows games through Proton
 Exec=$BIN_DIR/$APP_ID
 Icon=$icon
@@ -212,6 +217,12 @@ StartupNotify=true
 StartupWMClass=$APP_ID
 EOF
     ok "desktop entry: $DESKTOP_DIR/$APP_ID.desktop"
+
+    # Remove legacy desktop entry and icon.
+    if [ "$APP_ID" != "game-launcher" ]; then
+        [ -f "$DESKTOP_DIR/game-launcher.desktop" ] && rm -f "$DESKTOP_DIR/game-launcher.desktop" && ok "removed legacy desktop entry"
+        [ -f "$ICON_DIR/game-launcher.png" ] && rm -f "$ICON_DIR/game-launcher.png" && ok "removed legacy icon"
+    fi
 
     if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database "$DESKTOP_DIR" 2>/dev/null && ok "desktop database updated"
@@ -234,18 +245,18 @@ from launcher.app.context import AppContext  # noqa: F401
 from launcher.app.main import build_window   # noqa: F401
 " 2>/dev/null
     then
-        ok "the launcher imports cleanly"
+        ok "Milso Launcher imports cleanly"
     else
-        err "the launcher failed to import"
+        err "Milso Launcher failed to import"
         note "Run '$VENV/bin/python run.py' to see the error."
         return 1
     fi
 
-    chmod +x "$LAUNCHER_DIR/game-launcher.sh" 2>/dev/null
-    if bash -n "$LAUNCHER_DIR/game-launcher.sh" 2>/dev/null; then
-        ok "game-launcher.sh is valid"
+    chmod +x "$LAUNCHER_DIR/milso-launcher.sh" 2>/dev/null
+    if bash -n "$LAUNCHER_DIR/milso-launcher.sh" 2>/dev/null; then
+        ok "milso-launcher.sh is valid"
     else
-        err "game-launcher.sh has a syntax error"
+        err "milso-launcher.sh has a syntax error"
         return 1
     fi
 }
@@ -260,7 +271,10 @@ uninstall() {
     for target in \
         "$BIN_DIR/$APP_ID" \
         "$DESKTOP_DIR/$APP_ID.desktop" \
-        "$ICON_DIR/$APP_ID.png"
+        "$ICON_DIR/$APP_ID.png" \
+        "$BIN_DIR/game-launcher" \
+        "$DESKTOP_DIR/game-launcher.desktop" \
+        "$ICON_DIR/game-launcher.png"
     do
         if [ -e "$target" ]; then
             rm -f "$target" && ok "removed $target" && removed=1
@@ -275,8 +289,8 @@ uninstall() {
     printf '\nYour games, prefixes, artwork and settings were left alone:\n'
     note "games      $LAUNCHER_DIR/games"
     note "prefixes   $LAUNCHER_DIR/Prefix (and any per-game prefixes)"
-    note "settings   ${XDG_CONFIG_HOME:-$HOME/.config}/launcher"
-    note "state      ${XDG_DATA_HOME:-$HOME/.local/share}/launcher"
+    note "settings   ${XDG_CONFIG_HOME:-$HOME/.config}/milso-launcher"
+    note "state      ${XDG_DATA_HOME:-$HOME/.local/share}/milso-launcher"
     printf '\nTo remove those too, delete the directories above and this folder.\n'
 }
 

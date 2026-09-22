@@ -424,7 +424,7 @@ class SettingsDialog(QDialog):
         return self._column(card)
 
     def _build_about(self) -> QWidget:
-        about = _Card("Game Launcher")
+        about = _Card("Milso Launcher")
         about.form.addRow("Version", QLabel(_version()))
         paths = self._ctx.paths
         places = _Card("Where things live")
@@ -581,7 +581,7 @@ def _version() -> str:
     from importlib.metadata import PackageNotFoundError, version
 
     try:
-        return version("game-launcher")
+        return version("milso-launcher")
     except PackageNotFoundError:
         pass
     pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"

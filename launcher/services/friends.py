@@ -46,7 +46,8 @@ from launcher.services.process import ProcessService
 from launcher.services.tasks import TaskGroup
 
 #: Overrides the server address, e.g. http://127.0.0.1:8765 while developing.
-SERVER_ENV = "LAUNCHER_FRIENDS_SERVER"
+SERVER_ENV = "MILSO_FRIENDS_SERVER"
+_LEGACY_SERVER_ENV = "LAUNCHER_FRIENDS_SERVER"
 
 #: Poll intervals, in seconds.
 POLL_VISIBLE = 30
@@ -193,8 +194,10 @@ class FriendsService(QObject):
 
     @property
     def server_url(self) -> str:
-        return os.environ.get(SERVER_ENV, "").strip() or self._settings.get_str(
-            "friends_server_url"
+        return (
+            os.environ.get(SERVER_ENV, "").strip()
+            or os.environ.get(_LEGACY_SERVER_ENV, "").strip()
+            or self._settings.get_str("friends_server_url")
         )
 
     @property

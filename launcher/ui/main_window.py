@@ -59,7 +59,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._lib = controller
         self._ctx = controller.context
-        self.setWindowTitle("Game Launcher")
+        self.setWindowTitle("Milso Launcher")
         self.setMinimumSize(1024, 700)
         self.resize(1280, 800)
 
