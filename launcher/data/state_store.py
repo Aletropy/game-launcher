@@ -11,6 +11,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from launcher.domain.journal import Session
 from launcher.domain.models import GameStats
 
 _SCHEMA = """
@@ -23,10 +24,21 @@ CREATE TABLE IF NOT EXISTS game_state (
     launch_count      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_last_played ON game_state(last_played);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    name      TEXT NOT NULL,
+    started   TEXT NOT NULL,
+    seconds   INTEGER NOT NULL,
+    -- 1 for history reconstructed from totals, whose date is approximate.
+    imported  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started);
+CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(name);
 """
 
 #: Bumped when the schema changes; see _migrate.
-_USER_VERSION = 1
+_USER_VERSION = 2
 
 
 def _to_iso(when: datetime | None) -> str | None:
@@ -56,10 +68,30 @@ class StateStore:
 
     def _migrate(self) -> None:
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < 2:
+            self._backfill_sessions()
         if version < _USER_VERSION:
-            # Nothing to do for the first version; the schema is created
-            # above. Later migrations branch on `version` here.
             self._conn.execute(f"PRAGMA user_version = {_USER_VERSION}")
+
+    def _backfill_sessions(self) -> None:
+        """Give playtime recorded before sessions existed a history.
+
+        Only totals were kept, so each game gets one session of its whole
+        playtime on the day it was last played. It is marked imported, so
+        the journal can say its date is approximate rather than pretend.
+        """
+        existing = self._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        if existing:
+            return
+        rows = self._conn.execute(
+            "SELECT name, playtime_seconds, last_played FROM game_state"
+            " WHERE playtime_seconds > 0 AND last_played IS NOT NULL"
+        ).fetchall()
+        self._conn.executemany(
+            "INSERT INTO sessions (name, started, seconds, imported)"
+            " VALUES (?, ?, ?, 1)",
+            [(r["name"], r["last_played"], r["playtime_seconds"]) for r in rows],
+        )
 
     def close(self) -> None:
         self._conn.close()
@@ -140,16 +172,55 @@ class StateStore:
         self._conn.commit()
 
     def rename(self, old_name: str, new_name: str) -> None:
-        """Carry a game's state across a rename."""
+        """Carry a game's state and history across a rename."""
         self._conn.execute(
             "UPDATE OR REPLACE game_state SET name = ? WHERE name = ?",
             (new_name, old_name),
+        )
+        self._conn.execute(
+            "UPDATE sessions SET name = ? WHERE name = ?", (new_name, old_name)
         )
         self._conn.commit()
 
     def remove(self, name: str) -> None:
         self._conn.execute("DELETE FROM game_state WHERE name = ?", (name,))
+        self._conn.execute("DELETE FROM sessions WHERE name = ?", (name,))
         self._conn.commit()
+
+    # -- sessions --------------------------------------------------------
+
+    def record_session(self, name: str, started: datetime, seconds: int) -> None:
+        """Note one finished play session."""
+        if seconds <= 0:
+            return
+        self._conn.execute(
+            "INSERT INTO sessions (name, started, seconds) VALUES (?, ?, ?)",
+            (name, _to_iso(started), int(seconds)),
+        )
+        self._conn.commit()
+
+    def sessions(self, since: datetime | None = None) -> list[Session]:
+        """Play sessions, oldest first, optionally from a date on."""
+        query = "SELECT name, started, seconds, imported FROM sessions"
+        params: tuple = ()
+        if since is not None:
+            query += " WHERE started >= ?"
+            params = (_to_iso(since),)
+        rows = self._conn.execute(query + " ORDER BY started", params).fetchall()
+        sessions: list[Session] = []
+        for row in rows:
+            started = _from_iso(row["started"])
+            if started is None:
+                continue
+            sessions.append(
+                Session(
+                    name=row["name"],
+                    started=started,
+                    seconds=int(row["seconds"]),
+                    imported=bool(row["imported"]),
+                )
+            )
+        return sessions
 
     def prune(self, known: set[str]) -> int:
         """Drop rows for games that no longer exist. Returns how many."""

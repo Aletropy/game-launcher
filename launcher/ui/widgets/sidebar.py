@@ -138,6 +138,11 @@ class LibrarySidebar(QWidget):
     def search_text(self) -> str:
         return self._search.text().strip()
 
+    def clear_filters(self) -> None:
+        """Drop the search text and favourites filter."""
+        self._search.clear()
+        self._fav_filter.setChecked(False)
+
     def focus_search(self) -> None:
         self._search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self._search.selectAll()

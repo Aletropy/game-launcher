@@ -37,15 +37,15 @@ from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 from launcher.ui.widgets import log_view
 from launcher.ui.widgets.detail_panel import GameDetailPanel
-from launcher.ui.widgets.game_grid import GameGrid
+from launcher.ui.widgets.journal import JournalView
 from launcher.ui.widgets.sidebar import LibrarySidebar
 
-_LIST_VIEW = 0
-_GRID_VIEW = 1
+_LIBRARY_VIEW = 0
+_JOURNAL_VIEW = 1
 
 
 class MainWindow(QMainWindow):
-    """The library window: sidebar, detail panel and an alternate grid."""
+    """The library (sidebar and detail panel) and the play Journal."""
 
     def __init__(self, controller: LibraryController) -> None:
         super().__init__()
@@ -76,7 +76,7 @@ class MainWindow(QMainWindow):
 
         self._views = QStackedWidget()
         self._views.addWidget(self._build_library_view())
-        self._views.addWidget(self._build_grid_view())
+        self._views.addWidget(self._build_journal_view())
         root.addWidget(self._views, stretch=1)
 
         self.setStatusBar(QStatusBar())
@@ -93,11 +93,11 @@ class MainWindow(QMainWindow):
 
         self._view_group = QButtonGroup(self)
         self._view_group.setExclusive(True)
-        for index, label in ((_LIST_VIEW, "List"), (_GRID_VIEW, "Grid")):
+        for index, label in ((_LIBRARY_VIEW, "Library"), (_JOURNAL_VIEW, "Journal")):
             button = QPushButton(label)
             button.setObjectName("viewToggle")
             button.setCheckable(True)
-            button.setChecked(index == _LIST_VIEW)
+            button.setChecked(index == _LIBRARY_VIEW)
             button.setFixedHeight(32)
             self._view_group.addButton(button, index)
             layout.addWidget(button)
@@ -148,14 +148,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(splitter)
         return page
 
-    def _build_grid_view(self) -> QWidget:
-        page = QWidget()
-        page.setObjectName("gridPage")
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self._game_grid = GameGrid(self._ctx.artwork)
-        layout.addWidget(self._game_grid)
-        return page
+    def _build_journal_view(self) -> QWidget:
+        self._journal = JournalView(self._ctx.artwork)
+        return self._journal
 
     def _connect(self) -> None:
         lib = self._lib
@@ -185,12 +180,9 @@ class MainWindow(QMainWindow):
         detail.restore_requested.connect(self._restore_saves)
         detail.artwork_dropped.connect(self._artwork_dropped)
 
-        grid = self._game_grid
-        grid.play_requested.connect(self._launch_game)
-        grid.favorite_requested.connect(self._lib.toggle_favorite)
-        grid.edit_requested.connect(self._edit_game)
-        grid.remove_requested.connect(self._remove_game)
-        grid.fetch_artwork_requested.connect(self._fetch_artwork)
+        journal = self._journal
+        journal.play_requested.connect(self._launch_game)
+        journal.open_requested.connect(self._open_in_library)
 
         procs = self._ctx.processes
         procs.game_started.connect(self._on_game_started)
@@ -226,21 +218,25 @@ class MainWindow(QMainWindow):
         selected = self._sidebar.selected_game()
         self._sidebar.set_games(visible, select=selected)
         self._sidebar.set_sort_order(self._lib.sort_order.value)
-        self._game_grid.set_games(visible)
         for name in self._ctx.processes.running_games:
             self._sidebar.set_running(name, True)
-            self._game_grid.set_running(name, True)
         if not visible:
             self._detail.set_game(None)
+        self._refresh_journal()
+
+    def _refresh_journal(self) -> None:
+        """Rebuild the Journal from every game, not just the filtered ones."""
+        self._journal.refresh(self._lib.games, self._ctx.state.sessions())
 
     def _on_game_changed(self, name: str) -> None:
         game = self._lib.game(name)
         if game is None:
             return
         self._sidebar.set_games(self._lib.visible_games(), select=name)
-        self._game_grid.set_favorite(name, game.is_favorite)
         if self._detail_shows(name):
             self._detail.set_game(game)
+            self._detail.refresh_artwork()
+        self._refresh_journal()
 
     def _detail_shows(self, name: str) -> bool:
         return self._sidebar.selected_game() == name
@@ -270,18 +266,34 @@ class MainWindow(QMainWindow):
 
     def _switch_view(self, index: int) -> None:
         self._views.setCurrentIndex(index)
-        self._ctx.settings.set("view_mode", "grid" if index else "list")
+        button = self._view_group.button(index)
+        if button is not None and not button.isChecked():
+            button.setChecked(True)
+        self._ctx.settings.set(
+            "view_mode", "journal" if index == _JOURNAL_VIEW else "library"
+        )
 
     def _restore_view_mode(self) -> None:
-        index = _GRID_VIEW if self._ctx.settings.get_str("view_mode") == "grid" else _LIST_VIEW
+        # "grid" is what the removed card grid was saved as; the Journal
+        # took its place, so open that for anyone who preferred it.
+        mode = self._ctx.settings.get_str("view_mode")
+        index = _JOURNAL_VIEW if mode in ("journal", "grid") else _LIBRARY_VIEW
         button = self._view_group.button(index)
         if button is not None:
             button.setChecked(True)
         self._views.setCurrentIndex(index)
 
+    def _open_in_library(self, name: str) -> None:
+        """Jump from the Journal to a game's page in the library."""
+        self._switch_view(_LIBRARY_VIEW)
+        if not self._sidebar.select_game(name):
+            # Hidden by a filter; clear it so the game can be shown.
+            self._sidebar.clear_filters()
+            self._sidebar.select_game(name)
+
     def _focus_search(self) -> None:
-        if self._views.currentIndex() != _LIST_VIEW:
-            self._switch_view(_LIST_VIEW)
+        if self._views.currentIndex() != _LIBRARY_VIEW:
+            self._switch_view(_LIBRARY_VIEW)
         self._sidebar.focus_search()
 
     # -- game actions --------------------------------------------------
@@ -289,12 +301,8 @@ class MainWindow(QMainWindow):
     def _launch_game(self, name: str) -> None:
         if not self._lib.launch(name):
             return
-        if self._views.currentIndex() == _GRID_VIEW:
-            button = self._view_group.button(_LIST_VIEW)
-            if button is not None:
-                button.setChecked(True)
-            self._switch_view(_LIST_VIEW)
-        self._sidebar.select_game(name)
+        # Show the library, where the running game's log is.
+        self._open_in_library(name)
 
     def _play_selected(self) -> None:
         if (name := self._selected()) is not None:
@@ -521,14 +529,12 @@ class MainWindow(QMainWindow):
 
     def _on_game_started(self, name: str) -> None:
         self._log_for(name)
-        self._game_grid.set_running(name, True)
         self._sidebar.set_running(name, True)
         if self._detail_shows(name):
             self._detail.attach_log(self._logs[name])
             self._detail.set_running(True)
 
     def _on_game_finished(self, name: str, _exit_code: int) -> None:
-        self._game_grid.set_running(name, False)
         self._sidebar.set_running(name, False)
         if self._detail_shows(name):
             self._detail.set_running(False)

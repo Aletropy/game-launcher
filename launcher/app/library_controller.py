@@ -7,6 +7,7 @@ react to is a signal, so views stay replaceable.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -266,6 +267,9 @@ class LibraryController(QObject):
 
     def _on_session_recorded(self, name: str, seconds: int) -> None:
         self._ctx.state.add_playtime(name, seconds)
+        self._ctx.state.record_session(
+            name, datetime.now() - timedelta(seconds=seconds), seconds
+        )
         self.refresh_game(name)
         minutes = max(1, seconds // 60)
         self.status.emit(f"Recorded {minutes} min of playtime for {name}.")

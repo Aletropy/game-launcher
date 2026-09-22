@@ -17,6 +17,7 @@ ignore = [
     # without changing behaviour.
     "DTZ005",
     "DTZ901",
+    "DTZ011",
     # Qt's API is camelCase and overriding it is not optional.
     "N802",
     "N803",

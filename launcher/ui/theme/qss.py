@@ -16,7 +16,7 @@ QMainWindow, QDialog {
     background-color: $bg;
 }
 
-QWidget#libraryPage, QWidget#gridPage {
+QWidget#libraryPage, QWidget#journalBody, QScrollArea#journal {
     background-color: $bg;
 }
 
@@ -377,6 +377,35 @@ QPushButton#viewToggle:checked {
     background-color: $accent;
     color: $on_accent;
     border-color: $accent;
+}
+
+QLabel#journalSection {
+    color: $fg_muted;
+    font-size: ${font_xs}px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    padding-top: 4px;
+}
+
+QFrame#statTile, QFrame#journalCard {
+    background-color: $surface;
+    border: 1px solid $border;
+    border-radius: ${radius_lg}px;
+}
+
+QLabel#statCaption {
+    color: $fg_muted;
+    font-size: ${font_sm}px;
+}
+
+QLabel#statValue {
+    color: $fg_bright;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+QScrollArea#shelf, QScrollArea#shelf > QWidget > QWidget {
+    background-color: transparent;
 }
 
 QToolButton#moreButton {

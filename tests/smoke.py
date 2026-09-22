@@ -474,8 +474,12 @@ def artwork_store_caps_size_and_replaces_siblings() -> None:
 
 @test
 def artwork_reencode_shrinks_real_artwork() -> None:
-    """Synthetic images compress oddly; measure against a real one."""
-    from PySide6.QtGui import QImage
+    """Synthetic images compress oddly; measure against a real one.
+
+    Only art larger than the cover box counts: art already at its native
+    size has nothing to shed.
+    """
+    from PySide6.QtGui import QImage, QImageReader
 
     from launcher.services.artwork import EXTENSIONS, GRID, encode
 
@@ -486,7 +490,9 @@ def artwork_reencode_shrinks_real_artwork() -> None:
         for folder in (root / "heroes", root / "artwork" / "grid")
         if folder.is_dir()
         for p in folder.iterdir()
-        if p.suffix.lower() in EXTENSIONS and p.stat().st_size > 100_000
+        if p.suffix.lower() in EXTENSIONS
+        and p.stat().st_size > 100_000
+        and QImageReader(str(p)).size().height() > GRID.max_height
     ]
     if not candidates:
         return
@@ -1197,29 +1203,46 @@ def logs_are_kept_per_game() -> None:
 
 
 @test
-def grid_lays_out_cards_when_its_page_is_shown() -> None:
-    """A stacked page's children report isVisible() == False while hidden."""
+def the_journal_replaces_the_grid() -> None:
+    """The card grid is gone; the second view is the play Journal."""
+    from PySide6.QtWidgets import QPushButton
+
     from launcher.app.main import build_window
     from launcher.domain.models import GameConfig
 
     app = qt_app()
     with sandbox() as ctx:
-        for name in ("Alpha", "Beta", "Gamma"):
-            ctx.games.add(GameConfig(name=name, executable=f"/g/{name}.exe"))
+        exe = ctx.paths.base / "a.exe"
+        exe.write_bytes(b"\0")
+        for name in ("Alpha", "Beta"):
+            ctx.games.add(GameConfig(name=name, executable=str(exe)))
+        ctx.state.add_playtime("Alpha", 5400)
+        ctx.state.record_launch("Alpha")
+        ctx.state.record_session("Alpha", datetime.now(), 5400)
+
         window = build_window(ctx)
         window.resize(1280, 800)
         window.show()
         app.processEvents()
 
-        window._switch_view(1)
-        for _ in range(3):
-            app.processEvents()
+        labels = {b.text() for b in window.findChildren(QPushButton)}
+        assert "Grid" not in labels and "Journal" in labels, sorted(labels)
+        assert not hasattr(window, "_game_grid")
 
-        positions = {c.game.name: c.pos() for c in window._game_grid._cards}
-        assert len(positions) == 3, positions
-        assert len({(p.x(), p.y()) for p in positions.values()}) == 3, positions
-        # Contents margins are honoured, not ignored.
-        assert min(p.x() for p in positions.values()) > 0, positions
+        window._switch_view(1)
+        app.processEvents()
+        journal = window._journal
+        assert journal._continue_name == "Alpha", "last played game not offered"
+        assert journal._total_tile._value.text() == "1h 30m"
+        assert journal._streak_tile._value.text() == "1 day"
+
+        launched: list[str] = []
+        ctx.processes.launch = lambda n: (launched.append(n), True)[1]
+        journal._continue_btn.click()
+        app.processEvents()
+        assert launched == ["Alpha"], "Continue did not play the game"
+        # Launching switches to the library, where the log lives.
+        assert window._views.currentIndex() == 0
         window.close()
 
 
