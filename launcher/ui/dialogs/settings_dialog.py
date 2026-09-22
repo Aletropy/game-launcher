@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -36,10 +35,13 @@ from launcher.domain.journal import format_duration
 from launcher.services.friends import SERVER_ENV
 from launcher.services.friends_client import FriendsClient
 from launcher.services.tasks import TaskGroup
+from launcher.services.updates import UpdateInfo
 from launcher.ui.dialogs.confirm import Answer, ask
 from launcher.ui.theme import Appearance, apply_theme
 from launcher.ui.theme.custom import CustomThemeStore
 from launcher.ui.widgets.appearance_picker import AppearancePanel
+from launcher.ui.widgets.forms import Card, button_row
+from launcher.ui.widgets.forms import hint as _hint
 
 #: Prompts the user can silence, and how to describe re-enabling them.
 _SILENCEABLE = {
@@ -67,29 +69,9 @@ def _human(num_bytes: int) -> str:
     return f"{num_bytes} B"
 
 
-def _hint(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setObjectName("hintLabel")
-    label.setWordWrap(True)
-    return label
-
-
-class _Card(QFrame):
-    """A titled group of related settings."""
-
-    def __init__(self, title: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("settingsCard")
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 14, 16, 16)
-        outer.setSpacing(10)
-        heading = QLabel(title)
-        heading.setObjectName("cardTitle")
-        outer.addWidget(heading)
-        self.form = QFormLayout()
-        self.form.setSpacing(10)
-        self.form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        outer.addLayout(self.form)
+# _Card and _hint used to live here; they are shared dialog pieces now.
+_Card = Card
+_button_row = button_row
 
 
 class SettingsDialog(QDialog):
@@ -117,6 +99,11 @@ class SettingsDialog(QDialog):
         self._friends_tasks = TaskGroup(self)
         self._friends_tasks.finished.connect(lambda _t, r: self._show_server_result(str(r)))
         self._friends_tasks.failed.connect(lambda _t, m: self._show_server_result(m))
+        self._update_tasks = TaskGroup(self)
+        self._update_tasks.finished.connect(self._show_update_result)
+        self._update_tasks.failed.connect(self._show_update_result)
+        #: A newer release found by the last check, if any.
+        self._pending_update: UpdateInfo | None = None
         #: Put back on Cancel; changes preview live while the dialog is open.
         self._original_look = Appearance.from_settings(context.settings)
 
@@ -204,14 +191,6 @@ class SettingsDialog(QDialog):
             layout.addWidget(card)
         return column
 
-    @staticmethod
-    def _button_row(*widgets: QWidget) -> QHBoxLayout:
-        row = QHBoxLayout()
-        for widget in widgets:
-            row.addWidget(widget)
-        row.addStretch()
-        return row
-
     def show_page(self, page_id: str) -> None:
         if page_id in self._page_ids:
             self._nav.setCurrentRow(self._page_ids.index(page_id))
@@ -229,6 +208,24 @@ class SettingsDialog(QDialog):
         behaviour = _Card("Behaviour")
         self._confirm_remove = QCheckBox("Confirm before removing a game")
         behaviour.form.addRow(self._confirm_remove)
+        self._close_to_tray = QCheckBox("Keep running in the tray when closed")
+        self._close_to_tray.setToolTip(
+            "Closing the window hides it. Games keep running and playtime keeps counting."
+        )
+        behaviour.form.addRow(self._close_to_tray)
+        self._tray_hint = _hint(
+            "Games keep running and playtime is recorded even with the window closed."
+        )
+        behaviour.form.addRow(self._tray_hint)
+        try:
+            from PySide6.QtWidgets import QSystemTrayIcon
+
+            tray_available = QSystemTrayIcon.isSystemTrayAvailable()
+        except (ImportError, AttributeError, RuntimeError):
+            tray_available = False
+        if not tray_available:
+            self._close_to_tray.setEnabled(False)
+            self._tray_hint.setText("System tray is not available on this desktop.")
         self._log_lines = QSpinBox()
         self._log_lines.setRange(500, 100_000)
         self._log_lines.setSingleStep(500)
@@ -271,7 +268,7 @@ class SettingsDialog(QDialog):
         cleanup = QPushButton("Clean up artwork…")
         cleanup.setToolTip("Re-encode, remove duplicates and images of removed games")
         cleanup.clicked.connect(self.cleanup_requested)
-        storage.form.addRow(self._button_row(cleanup))
+        storage.form.addRow(_button_row(cleanup))
         return self._column(source, storage)
 
     def _build_saves(self) -> QWidget:
@@ -291,7 +288,7 @@ class SettingsDialog(QDialog):
         )
         manage = QPushButton("Shared saves…")
         manage.clicked.connect(self.shared_saves_requested)
-        sharing.form.addRow(self._button_row(manage))
+        sharing.form.addRow(_button_row(manage))
 
         backups = _Card("Automatic backups")
         self._backup_auto = QCheckBox("Back up saves after playing")
@@ -324,7 +321,7 @@ class SettingsDialog(QDialog):
         count = len(self._ctx.backups.snapshots())
         browse = QPushButton("Backups…")
         browse.clicked.connect(self.backups_requested)
-        backups.form.addRow(self._button_row(browse, _hint(f"{count} backup(s) now.")))
+        backups.form.addRow(_button_row(browse, _hint(f"{count} backup(s) now.")))
 
         exclude = _Card("Leave out of backups")
         self._exclude = QPlainTextEdit()
@@ -354,7 +351,7 @@ class SettingsDialog(QDialog):
         button = QPushButton("Clear data…")
         button.setObjectName("dangerButton")
         button.clicked.connect(self.clear_data_requested)
-        recorded.form.addRow(self._button_row(button))
+        recorded.form.addRow(_button_row(button))
         return self._column(recorded)
 
     def _build_friends(self) -> QWidget:
@@ -409,7 +406,7 @@ class SettingsDialog(QDialog):
             "Removes your profile, friends and everything shared from the server, "
             "and switches to Offline Mode. Your own library is not touched."
         )
-        profile.form.addRow(self._button_row(self._delete_profile))
+        profile.form.addRow(_button_row(self._delete_profile))
         profile.form.addRow(self._profile_status)
         return self._column(mode, server, profile)
 
@@ -425,7 +422,27 @@ class SettingsDialog(QDialog):
 
     def _build_about(self) -> QWidget:
         about = _Card("Milso Launcher")
-        about.form.addRow("Version", QLabel(_version()))
+        from launcher.services import updates
+
+        about.form.addRow("Version", QLabel(updates.current_version()))
+        self._update_status = _hint(self._update_summary())
+        about.form.addRow(self._update_status)
+        update_row = QHBoxLayout()
+        check_btn = QPushButton("Check for updates")
+        check_btn.clicked.connect(self._check_updates)
+        update_row.addWidget(check_btn)
+        self._download_btn = QPushButton("Download…")
+        self._download_btn.setEnabled(False)
+        self._download_btn.clicked.connect(self._open_update_url)
+        update_row.addWidget(self._download_btn)
+        update_row.addStretch()
+        about.form.addRow(update_row)
+        self._feed_edit = QLineEdit()
+        self._feed_edit.setPlaceholderText("Release feed URL (optional)")
+        about.form.addRow("Feed", self._feed_edit)
+        about.form.addRow(
+            _hint("Empty means never check. Points at a JSON release feed.")
+        )
         paths = self._ctx.paths
         places = _Card("Where things live")
         for label, path in (
@@ -453,6 +470,8 @@ class SettingsDialog(QDialog):
     def _load(self) -> None:
         settings = self._ctx.settings
         self._confirm_remove.setChecked(settings.get_bool("confirm_remove"))
+        self._close_to_tray.setChecked(settings.get_bool("close_to_tray"))
+        self._feed_edit.setText(settings.get_str("update_feed_url"))
         self._log_lines.setValue(settings.get_int("log_max_lines"))
         self._api_key.setText(settings.get_str("sgdb_api_key"))
         self._fetch_on_add.setChecked(settings.get_bool("fetch_artwork_on_add"))
@@ -476,6 +495,9 @@ class SettingsDialog(QDialog):
     def _save(self) -> None:
         values = {
             "confirm_remove": self._confirm_remove.isChecked(),
+            "close_to_tray": self._close_to_tray.isChecked(),
+            "close_to_tray_asked": True,
+            "update_feed_url": self._feed_edit.text().strip(),
             "log_max_lines": self._log_lines.value(),
             "sgdb_api_key": self._api_key.text().strip(),
             "fetch_artwork_on_add": self._fetch_on_add.isChecked(),
@@ -503,6 +525,55 @@ class SettingsDialog(QDialog):
         app = QApplication.instance()
         if isinstance(app, QApplication):
             apply_theme(app, look)
+
+    def _update_summary(self) -> str:
+        last = self._ctx.settings.get_str("update_last_check")
+        if not self._ctx.settings.get_str("update_feed_url").strip():
+            return "Update checks are off (no feed configured)."
+        if self._pending_update is not None:
+            return f"Version {self._pending_update.version} is available."
+        if last:
+            return f"Up to date as of {last}."
+        return "Never checked."
+
+    def _check_updates(self) -> None:
+        from launcher.services import updates
+
+        feed = self._feed_edit.text().strip()
+        if not feed:
+            self._update_status.setText("Set a feed URL first, then check.")
+            return
+        self._update_status.setText("Checking…")
+        self._download_btn.setEnabled(False)
+        current = updates.current_version()
+        self._update_tasks.submit(lambda: updates.check(feed, current))
+
+    def _show_update_result(self, info: object) -> None:
+        from launcher.services import updates
+
+        if not isinstance(info, UpdateInfo):
+            self._update_status.setText("Could not check for updates.")
+            return
+        self._ctx.settings.set("update_last_check", updates.stamp_now())
+        if info.available:
+            self._pending_update = info
+            text = f"Version {info.version} is available."
+            if info.notes:
+                text += f" {info.notes}"
+            self._update_status.setText(text)
+            self._download_btn.setEnabled(bool(info.url))
+        else:
+            self._pending_update = None
+            self._update_status.setText(
+                f"Up to date as of {self._ctx.settings.get_str('update_last_check')}."
+            )
+
+    def _open_update_url(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        if self._pending_update is not None and self._pending_update.url:
+            QDesktopServices.openUrl(QUrl(self._pending_update.url))
 
     # -- API key check -------------------------------------------------
 
@@ -574,24 +645,6 @@ def _open(path: Path) -> None:
     from launcher.services.prefix_tools import open_path
 
     open_path(path)
-
-
-def _version() -> str:
-    """The installed package's version, or pyproject's when run from source."""
-    from importlib.metadata import PackageNotFoundError, version
-
-    try:
-        return version("milso-launcher")
-    except PackageNotFoundError:
-        pass
-    pyproject = Path(__file__).resolve().parents[3] / "pyproject.toml"
-    try:
-        for line in pyproject.read_text(encoding="utf-8").splitlines():
-            if line.startswith("version"):
-                return line.split("=", 1)[1].strip().strip('"')
-    except OSError:
-        pass
-    return "unknown"
 
 
 def default_for(key: str) -> object:

@@ -11,6 +11,7 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -28,7 +29,9 @@ from PySide6.QtWidgets import (
 from launcher.data.paths import Paths
 from launcher.domain import prefixes
 from launcher.domain.models import Game, GameConfig
+from launcher.services.protons import describe, list_installed
 from launcher.ui.dialogs.confirm import warn
+from launcher.ui.widgets.forms import hint as _hint
 
 #: Config field, label, placeholder for the Proton and driver variables.
 _ENV_FIELDS = (
@@ -95,13 +98,6 @@ class AddGameDialog(QDialog):
         return page, form
 
     @staticmethod
-    def _hint(text: str) -> QLabel:
-        label = QLabel(text)
-        label.setObjectName("hintLabel")
-        label.setWordWrap(True)
-        return label
-
-    @staticmethod
     def _with_browse(edit: QLineEdit, handler: Callable[[], None]) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(6)
@@ -124,13 +120,13 @@ class AddGameDialog(QDialog):
         self._args_edit = QLineEdit()
         self._args_edit.setPlaceholderText("-console -windowed")
         form.addRow("Arguments", self._args_edit)
-        form.addRow(self._hint("Passed to the game, separated by spaces."))
+        form.addRow(_hint("Passed to the game, separated by spaces."))
 
         self._appid_edit = QLineEdit("480")
         self._appid_edit.setPlaceholderText("480")
         form.addRow("Steam App ID", self._appid_edit)
         form.addRow(
-            self._hint(
+            _hint(
                 "Used by Proton for game-specific fixes. 480 (Spacewar) works "
                 "for games that are not on Steam."
             )
@@ -140,9 +136,32 @@ class AddGameDialog(QDialog):
     def _build_compatibility(self) -> QWidget:
         page, form = self._page()
 
+        self._proton_builds = list_installed()
+        proton_box = QWidget()
+        proton_layout = QVBoxLayout(proton_box)
+        proton_layout.setContentsMargins(0, 0, 0, 0)
+        proton_layout.setSpacing(6)
+        self._proton_combo = QComboBox()
+        self._proton_combo.addItem("Default Proton", "")
+        for build in self._proton_builds:
+            self._proton_combo.addItem(build.label, str(build.path))
+        self._proton_combo.addItem("Custom…", "__custom__")
+        self._proton_combo.currentIndexChanged.connect(self._update_proton_state)
+        proton_layout.addWidget(self._proton_combo)
         self._proton_edit = QLineEdit()
-        self._proton_edit.setPlaceholderText("Default Proton")
-        form.addRow("Proton", self._with_browse(self._proton_edit, self._browse_proton))
+        self._proton_edit.setPlaceholderText("/path/to/Proton")
+        self._proton_edit.textChanged.connect(self._update_proton_status)
+        proton_row = QHBoxLayout()
+        proton_row.setSpacing(6)
+        proton_row.addWidget(self._proton_edit, stretch=1)
+        self._proton_browse = QPushButton("Browse…")
+        self._proton_browse.clicked.connect(self._browse_proton)
+        proton_row.addWidget(self._proton_browse)
+        proton_layout.addLayout(proton_row)
+        self._proton_status = _hint("")
+        proton_layout.addWidget(self._proton_status)
+        form.addRow("Proton", proton_box)
+        self._update_proton_state()
 
         self._dlls_edit = QLineEdit()
         self._dlls_edit.setPlaceholderText("d3d11=n,b;dxgi=n,b")
@@ -172,7 +191,7 @@ class AddGameDialog(QDialog):
         prefix_row.addWidget(self._prefix_browse)
         prefix_layout.addLayout(prefix_row)
 
-        self._prefix_status = self._hint("")
+        self._prefix_status = _hint("")
         prefix_layout.addWidget(self._prefix_status)
         form.addRow("Wine prefix", prefix_box)
         return page
@@ -207,7 +226,7 @@ class AddGameDialog(QDialog):
         gs_form.addRow("Extra arguments", self._gsargs_edit)
         form.addRow(self._gs_widget)
         form.addRow(
-            self._hint(
+            _hint(
                 "Gamescope renders the game at one resolution and scales it to "
                 "another, e.g. for older games or FSR upscaling."
             )
@@ -224,7 +243,7 @@ class AddGameDialog(QDialog):
         self._extra_vars_edit = QLineEdit()
         self._extra_vars_edit.setPlaceholderText("MY_VAR=value;OTHER=val")
         form.addRow("Environment", self._extra_vars_edit)
-        form.addRow(self._hint("Extra variables, separated by semicolons."))
+        form.addRow(_hint("Extra variables, separated by semicolons."))
 
         section = QLabel("Proton and driver options")
         section.setObjectName("sectionTitle")
@@ -235,7 +254,7 @@ class AddGameDialog(QDialog):
             edit.setPlaceholderText(placeholder)
             form.addRow(label, edit)
             self._env_edits[field] = edit
-        form.addRow(self._hint("Leave blank to use the defaults."))
+        form.addRow(_hint("Leave blank to use the defaults."))
         return page
 
     def _populate_fields(self) -> None:
@@ -246,7 +265,7 @@ class AddGameDialog(QDialog):
         self._exe_edit.setText(g.config.executable)
         self._appid_edit.setText(g.config.game_id)
         self._args_edit.setText(" ".join(g.config.game_args))
-        self._proton_edit.setText(g.config.custom_proton_path)
+        self._select_proton(g.config.custom_proton_path)
         self._dlls_edit.setText(";".join(g.config.additional_dlls))
         self._gs_check.setChecked(g.config.use_gamescope)
         self._gsw_edit.setText(g.config.gamescope_w)
@@ -313,7 +332,45 @@ class AddGameDialog(QDialog):
     def _browse_proton(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Select Proton Directory")
         if path:
+            self._proton_combo.setCurrentIndex(self._proton_combo.count() - 1)
             self._proton_edit.setText(path)
+
+    def _selected_proton(self) -> str:
+        """The custom Proton path, or "" for the default build."""
+        if self._proton_combo.currentData() == "__custom__":
+            return self._proton_edit.text().strip()
+        data = self._proton_combo.currentData()
+        return str(data or "")
+
+    def _select_proton(self, custom_path: str) -> None:
+        custom_path = (custom_path or "").strip()
+        for index in range(self._proton_combo.count()):
+            if self._proton_combo.itemData(index) == custom_path and custom_path:
+                self._proton_combo.setCurrentIndex(index)
+                self._update_proton_state()
+                return
+        if custom_path:
+            self._proton_combo.setCurrentIndex(self._proton_combo.count() - 1)
+            self._proton_edit.setText(custom_path)
+        else:
+            self._proton_combo.setCurrentIndex(0)
+        self._update_proton_state()
+
+    def _update_proton_state(self) -> None:
+        custom = self._proton_combo.currentData() == "__custom__"
+        self._proton_edit.setVisible(custom)
+        self._proton_browse.setVisible(custom)
+        self._update_proton_status()
+
+    def _update_proton_status(self) -> None:
+        if self._proton_combo.currentData() == "__custom__":
+            self._proton_status.setText(describe(self._proton_edit.text()))
+        elif self._proton_combo.currentData():
+            self._proton_status.setText("")
+        elif not self._proton_builds:
+            self._proton_status.setText("No Proton builds found on this machine.")
+        else:
+            self._proton_status.setText("")
 
     def _validate_and_accept(self) -> None:
         name = self._name_edit.text().strip()
@@ -354,7 +411,7 @@ class AddGameDialog(QDialog):
             "executable": self._exe_edit.text().strip(),
             "game_id": self._appid_edit.text().strip() or "480",
             "game_args": game_args,
-            "custom_proton_path": self._proton_edit.text().strip(),
+            "custom_proton_path": self._selected_proton(),
             "additional_dlls": additional_dlls,
             "use_gamescope": self._gs_check.isChecked(),
             "gamescope_w": self._gsw_edit.text().strip() or "1280",

@@ -33,7 +33,7 @@ from launcher.ui.widgets.elide import ElidingLabel
 from launcher.ui.widgets.hero_banner import HeroBanner
 from launcher.ui.widgets.log_view import LogView
 
-_INFO_ROWS = ("Prefix", "Saves", "Proton", "App ID", "Executable")
+_INFO_ROWS = ("Prefix", "Saves", "Proton", "App ID", "Executable", "Tags")
 
 
 class GameDetailPanel(QWidget):
@@ -43,6 +43,13 @@ class GameDetailPanel(QWidget):
     stop_requested = Signal(str)
     edit_requested = Signal(str)
     favorite_requested = Signal(str)
+    #: game name; the window opens the tags/notes editor for it.
+    organize_requested = Signal(str)
+    hide_requested = Signal(str)
+    #: game name; the window opens its session ledger.
+    sessions_requested = Signal(str)
+    #: game name, "create" or "remove" for the desktop shortcut.
+    shortcut_requested = Signal(str, str)
     artwork_requested = Signal(str)
     remove_requested = Signal(str)
     clear_log_requested = Signal(str)
@@ -206,6 +213,10 @@ class GameDetailPanel(QWidget):
         self._prefix_menu.addAction(
             "Wine file browser", lambda: self._emit_tool("explorer")
         )
+        self._prefix_menu.addSeparator()
+        self._prefix_menu.addAction(
+            "Rebuild prefix…", lambda: self._emit_tool("rebuild")
+        )
         self._more_menu.addMenu(self._prefix_menu)
 
         self._saves_menu = QMenu("Saves", self)
@@ -217,6 +228,23 @@ class GameDetailPanel(QWidget):
         )
         self._more_menu.addMenu(self._saves_menu)
         self._more_menu.addSeparator()
+        self._shortcut_menu = QMenu("Desktop shortcut", self)
+        self._shortcut_menu.addAction(
+            "Create", lambda: self._emit_shortcut("create")
+        )
+        self._shortcut_menu.addAction(
+            "Remove", lambda: self._emit_shortcut("remove")
+        )
+        self._more_menu.addMenu(self._shortcut_menu)
+        self._more_menu.addAction(
+            "Tags & notes…", lambda: self._emit_named(self.organize_requested)
+        )
+        self._hide_action = self._more_menu.addAction(
+            "Hide", lambda: self._emit_named(self.hide_requested)
+        )
+        self._more_menu.addAction(
+            "Sessions…", lambda: self._emit_named(self.sessions_requested)
+        )
         self._more_menu.addAction(
             "Clear data\u2026", lambda: self._emit_named(self.clear_data_requested)
         )
@@ -258,6 +286,8 @@ class GameDetailPanel(QWidget):
             game.config.override_app_id or game.config.game_id
         )
         self._info_values["Executable"].setText(game.executable)
+        self._info_values["Tags"].setText(", ".join(game.tags))
+        self._hide_action.setText("Unhide" if game.hidden else "Hide")
 
         if not game.executable_exists:
             self._warning.setText(
@@ -340,6 +370,10 @@ class GameDetailPanel(QWidget):
     def _emit_tool(self, tool: str) -> None:
         if (name := self._name()) is not None:
             self.prefix_tool_requested.emit(name, tool)
+
+    def _emit_shortcut(self, action: str) -> None:
+        if (name := self._name()) is not None:
+            self.shortcut_requested.emit(name, action)
 
     def _emit_play(self) -> None:
         self._emit_named(self.play_requested)

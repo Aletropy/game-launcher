@@ -7,13 +7,15 @@ react to is a signal, so views stay replaceable.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import contextlib as _contextlib
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from launcher.app.context import AppContext
+from launcher.app.launch_checks import check_launch
 from launcher.app.save_keeper import SaveKeeper
+from launcher.app.session_recorder import SessionRecorder
 from launcher.domain.library_filter import Availability, LibraryFilter
 from launcher.domain.models import (
     Game,
@@ -35,6 +37,8 @@ class LibraryController(QObject):
     error = Signal(str, str)
     #: A transient status message.
     status = Signal(str)
+    #: A launch was blocked by pre-launch checks; carries the game name.
+    launch_blocked = Signal(str)
 
     def __init__(self, context: AppContext, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -56,9 +60,17 @@ class LibraryController(QObject):
 
         # Playtime is recorded here rather than in the window, so it is
         # counted whether or not any view is listening.
-        context.processes.session_recorded.connect(self._on_session_recorded)
-        context.processes.game_started.connect(self._on_game_started)
-        context.processes.game_finished.connect(self._on_game_finished)
+        self.recorder = SessionRecorder(
+            context,
+            refresh_game=self.refresh_game,
+            filter_shows_running=lambda: self._filter.running,
+            emit_library_changed=self.library_changed.emit,
+            last_log_tail=context.logs.recent,
+            parent=self,
+        )
+        self.recorder.status.connect(self.status)
+        #: The latest pre-launch warnings per game, shown if it then fails.
+        self.last_warnings: dict[str, list[str]] = {}
 
     # -- data ----------------------------------------------------------
 
@@ -200,6 +212,12 @@ class LibraryController(QObject):
                 self.error.emit("Rename Failed", str(e))
                 return False
             self._ctx.artwork.rename(original_name, config.name)
+            from launcher.services import shortcuts
+
+            if shortcuts.exists(original_name):
+                shortcuts.remove(original_name)
+                with _contextlib.suppress(OSError):
+                    shortcuts.create(config.name, artwork=self._ctx.artwork)
 
         try:
             self._ctx.games.update(config)
@@ -226,6 +244,31 @@ class LibraryController(QObject):
             self.library_changed.emit()
         return new_state
 
+    def all_tags(self) -> list[str]:
+        """Every tag in use across the library, sorted."""
+        tags: set[str] = set()
+        for game in self._games:
+            tags.update(game.tags)
+        return sorted(tags)
+
+    def set_tags(self, name: str, raw_tags: str | list[str]) -> None:
+        """Replace a game's tags. Accepts comma-separated text or a list."""
+        from launcher.domain.models import normalize_tags
+
+        self._ctx.state.set_tags(name, normalize_tags(raw_tags))
+        self.refresh_game(name)
+        if self._filter.tags:
+            self.library_changed.emit()
+
+    def set_notes(self, name: str, notes: str) -> None:
+        self._ctx.state.set_notes(name, notes)
+        self.refresh_game(name)
+
+    def set_hidden(self, name: str, hidden: bool) -> None:
+        """Hide a game from the library, or show it again."""
+        self._ctx.state.set_hidden(name, hidden)
+        self.reload()
+
     def set_artwork_from_file(self, name: str, source: Path, art: str) -> bool:
         """Use a local image as a game's artwork."""
         try:
@@ -241,14 +284,20 @@ class LibraryController(QObject):
 
     def launch(self, name: str) -> bool:
         game = self.game(name)
-        if game is not None and not game.executable_exists:
-            self.error.emit(
-                "Cannot Launch",
-                f"The executable for '{name}' was not found:\n{game.executable}",
+        if game is None:
+            return self._ctx.processes.launch(name)
+        blocks, warnings = check_launch(game, self._ctx.paths)
+        self.last_warnings[name] = [w.title for w in warnings]
+        if warnings and not blocks:
+            self.status.emit("; ".join(w.title for w in warnings) + ".")
+        if blocks:
+            text = "\n".join(
+                f"• {b.title}: {b.detail or b.hint}".rstrip(": ") for b in blocks
             )
+            self.error.emit("Cannot Launch", text)
+            self.launch_blocked.emit(name)
             return False
-        if game is not None:
-            self.saves.before_launch(game)
+        self.saves.before_launch(game)
         return self._ctx.processes.launch(name)
 
     def stop(self, name: str) -> bool:
@@ -256,25 +305,6 @@ class LibraryController(QObject):
 
     def is_running(self, name: str) -> bool:
         return self._ctx.processes.is_running(name)
-
-    def _on_game_started(self, name: str) -> None:
-        self._ctx.state.record_launch(name)
-        self.refresh_game(name)
-        if self._filter.running:
-            self.library_changed.emit()
-
-    def _on_game_finished(self, name: str, _exit_code: int) -> None:
-        if self._filter.running:
-            self.library_changed.emit()
-
-    def _on_session_recorded(self, name: str, seconds: int) -> None:
-        self._ctx.state.add_playtime(name, seconds)
-        self._ctx.state.record_session(
-            name, datetime.now() - timedelta(seconds=seconds), seconds
-        )
-        self.refresh_game(name)
-        minutes = max(1, seconds // 60)
-        self.status.emit(f"Recorded {minutes} min of playtime for {name}.")
 
 
 def _sort_from_settings(value: str) -> SortOrder:

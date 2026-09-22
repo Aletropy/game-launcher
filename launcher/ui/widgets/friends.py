@@ -39,11 +39,13 @@ from PySide6.QtWidgets import (
 from launcher.domain import journal
 from launcher.domain.friends import (
     BoardPeriod,
+    CommonGame,
     Friend,
     FriendRequest,
     FriendsSnapshot,
     FriendsState,
     LeaderboardRow,
+    common_games,
     format_code,
     format_seen,
     format_since,
@@ -96,13 +98,19 @@ class _LocalGames:
 
     def __init__(self) -> None:
         self._by_key: dict[str, str] = {}
+        self._seconds: dict[str, int] = {}
 
     def update(self, games: list[Game]) -> None:
         self._by_key = {game_key(g.config): g.name for g in games}
+        self._seconds = {game_key(g.config): g.playtime_seconds for g in games}
 
     def name(self, key: str) -> str | None:
         """The user's own name for a game, or None if they don't have it."""
         return self._by_key.get(key)
+
+    def seconds(self, key: str) -> int:
+        """The user's playtime for a game key, or 0."""
+        return self._seconds.get(key, 0)
 
     def owns(self, name: str) -> bool:
         return name in self._by_key.values()
@@ -606,6 +614,15 @@ class FriendsView(QScrollArea):
         self._shelf_scroll = shelf_scroll
         layout.addWidget(shelf_scroll)
 
+        # In common: games you own that friends play too.
+        self._common_label = _section("In common")
+        layout.addWidget(self._common_label)
+        self._common_card, common_layout = _card()
+        self._common_rows = QVBoxLayout()
+        self._common_rows.setSpacing(6)
+        common_layout.addLayout(self._common_rows)
+        layout.addWidget(self._common_card)
+
         # Leaderboard.
         board_head = QHBoxLayout()
         board_head.addWidget(_section("Leaderboard"))
@@ -699,6 +716,7 @@ class FriendsView(QScrollArea):
         )
         self._render_requests(snap)
         self._render_playing(snap)
+        self._render_common(snap)
         self._render_board(snap)
         self._render_friends(snap)
 
@@ -742,6 +760,37 @@ class FriendsView(QScrollArea):
         visible = bool(snap.playing_now)
         self._playing_label.setVisible(visible)
         self._shelf_scroll.setVisible(visible)
+
+    def _render_common(self, snap: FriendsSnapshot) -> None:
+        _clear(self._common_rows)
+        common = common_games(
+            snap.friends,
+            local_name=self._local.name,
+            local_seconds=self._local.seconds,
+        )[:6]
+        for game in common:
+            self._common_rows.addWidget(self._common_row(game))
+        visible = bool(common)
+        self._common_label.setVisible(visible)
+        self._common_card.setVisible(visible)
+
+    def _common_row(self, game: CommonGame) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        names = ", ".join(game.friend_names[:3])
+        if len(game.friend_names) > 3:
+            names += f" and {len(game.friend_names) - 3} more"
+        detail = f"{names} · {journal.format_duration(game.friends_seconds)}"
+        if game.mine_seconds:
+            detail += f" · you: {journal.format_duration(game.mine_seconds)}"
+        text = QLabel(f"<b>{game.name}</b><br>{detail}")
+        text.setTextFormat(Qt.TextFormat.RichText)
+        layout.addWidget(text, stretch=1)
+        open_btn = QPushButton("Open")
+        open_btn.clicked.connect(lambda: self.open_requested.emit(game.name))
+        layout.addWidget(open_btn)
+        return row
 
     def _render_board(self, snap: FriendsSnapshot) -> None:
         # Refill the game list without losing the choice.

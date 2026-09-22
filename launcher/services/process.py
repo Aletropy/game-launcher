@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from PySide6.QtCore import QObject, QProcess, Signal
 
@@ -18,8 +19,11 @@ MIN_SESSION_SECONDS = 20
 
 @dataclass
 class _Session:
-    process: QProcess
+    process: QProcess | None
     started_at: float
+    started_wall: datetime = field(default_factory=datetime.now)
+    pid: int | None = None
+    watcher_pid: int | None = None
 
 
 class ProcessService(QObject):
@@ -38,6 +42,12 @@ class ProcessService(QObject):
         super().__init__(parent)
         self._paths = paths
         self._sessions: dict[str, _Session] = {}
+        #: Exit code of the most recently finished launch, per game.
+        #: Read synchronously by the session recorder while handling
+        #: session_recorded, which is always emitted before game_finished.
+        self._last_exit: dict[str, int] = {}
+        #: How long the most recently finished launch ran, per game.
+        self._last_seconds: dict[str, int] = {}
 
     @property
     def running_games(self) -> list[str]:
@@ -45,6 +55,21 @@ class ProcessService(QObject):
 
     def is_running(self, game_name: str) -> bool:
         return game_name in self._sessions
+
+    def last_exit_code(self, game_name: str) -> int | None:
+        """Exit code of the latest finished launch, if any."""
+        return self._last_exit.get(game_name)
+
+    def last_session_seconds(self, game_name: str) -> int | None:
+        """How long the latest finished launch ran, if known."""
+        return self._last_seconds.get(game_name)
+
+    def elapsed_seconds(self, game_name: str) -> int:
+        """How long a running game has been playing, or 0."""
+        session = self._sessions.get(game_name)
+        if session is None:
+            return 0
+        return max(0, int(time.monotonic() - session.started_at))
 
     def launch(self, game_name: str) -> bool:
         """Launch a game by name. Returns True if it started."""
@@ -69,20 +94,58 @@ class ProcessService(QObject):
             lambda err, gn=game_name: self._on_process_error(gn, err)
         )
 
-        self._sessions[game_name] = _Session(process, time.monotonic())
+        started_wall = datetime.now()
+        self._last_exit.pop(game_name, None)
+        self._last_seconds.pop(game_name, None)
+        self._sessions[game_name] = _Session(process, time.monotonic(), started_wall)
         process.start(_SHELL, [str(script), game_name])
         if game_name not in self._sessions:
             # errorOccurred already fired synchronously; the entry was
             # cleaned up and no finished signal will follow.
             return False
+        session = self._sessions[game_name]
+        try:
+            pid = int(process.processId())
+        except (RuntimeError, TypeError, ValueError):
+            pid = 0
+        session.pid = pid or None
+        self._persist_and_watch(game_name, session)
         self.game_started.emit(game_name)
         return True
+
+    def _persist_and_watch(self, game_name: str, session: _Session) -> None:
+        """Remember the launch on disk and cover it with a watcher."""
+        try:
+            from launcher.services import sessions as _sessions
+
+            _sessions.add_active(
+                self._paths, game_name, session.started_wall, session.pid
+            )
+            if session.pid:
+                from launcher.services.session_watcher import spawn_watcher
+
+                watcher = spawn_watcher(
+                    self._paths,
+                    game_name,
+                    session.started_wall.isoformat(timespec="seconds"),
+                    session.pid,
+                )
+                if watcher:
+                    session.watcher_pid = watcher
+                    _sessions.update_active(
+                        self._paths, game_name, watcher_pid=watcher
+                    )
+        except (OSError, ValueError):
+            pass
 
     def stop(self, game_name: str) -> bool:
         """Terminate a running game. Returns True if it was running."""
         session = self._sessions.get(game_name)
         if session is None:
             return False
+        if session.process is None:
+            self._on_finished(game_name, -1)
+            return True
         session.process.terminate()
         return True
 
@@ -90,11 +153,47 @@ class ProcessService(QObject):
         for name in list(self._sessions):
             self.stop(name)
 
+    def detach_all(self) -> None:
+        """Leave running games alive for a real quit.
+
+        Called from the app's shutdown path instead of stop_all(): the
+        game processes keep running (they become orphans) and each one's
+        watcher writes the full playtime when it exits.
+        """
+        try:
+            from launcher.services import sessions as _sessions
+            from launcher.services.session_watcher import spawn_watcher
+        except ImportError:
+            return
+        for name, session in self._sessions.items():
+            try:
+                active = _sessions.load_active(self._paths).get(name)
+                if active is None:
+                    _sessions.add_active(
+                        self._paths, name, session.started_wall, session.pid
+                    )
+                    active = _sessions.load_active(self._paths).get(name)
+                watcher_pid = (active or {}).get("watcher_pid")
+                if session.pid and not _sessions.pid_alive(watcher_pid):
+                    watcher = spawn_watcher(
+                        self._paths,
+                        name,
+                        session.started_wall.isoformat(timespec="seconds"),
+                        session.pid,
+                    )
+                    if watcher:
+                        session.watcher_pid = watcher
+                        _sessions.update_active(
+                            self._paths, name, watcher_pid=watcher
+                        )
+            except (OSError, ValueError):
+                continue
+
     # -- process signals -----------------------------------------------
 
     def _on_output(self, game_name: str) -> None:
         session = self._sessions.get(game_name)
-        if session is None:
+        if session is None or session.process is None:
             return
         raw = bytes(session.process.readAllStandardOutput().data())
         text = raw.decode("utf-8", errors="replace")
@@ -111,18 +210,36 @@ class ProcessService(QObject):
             # No finished signal follows a failed start, so release the
             # slot here or the game stays "running" for the session.
             self._sessions.pop(game_name, None)
-            self.game_error.emit(
-                game_name,
-                f"Failed to start milso-launcher.sh: {session.process.errorString()}",
-            )
+            self._last_exit[game_name] = -1
+            try:
+                from launcher.services import sessions as _sessions
+
+                _sessions.remove_active(self._paths, game_name)
+            except (OSError, ValueError):
+                pass
+            if session.process is not None:
+                self.game_error.emit(
+                    game_name,
+                    f"Failed to start milso-launcher.sh: {session.process.errorString()}",
+                )
             self.game_finished.emit(game_name, -1)
-        else:
+        elif session.process is not None:
             self.game_error.emit(game_name, session.process.errorString())
 
     def _on_finished(self, game_name: str, exit_code: int) -> None:
         session = self._sessions.pop(game_name, None)
+        self._last_exit[game_name] = exit_code
+        elapsed = (
+            int(time.monotonic() - session.started_at) if session is not None else 0
+        )
+        self._last_seconds[game_name] = elapsed
         if session is not None:
-            elapsed = int(time.monotonic() - session.started_at)
             if elapsed >= MIN_SESSION_SECONDS:
                 self.session_recorded.emit(game_name, elapsed)
+            try:
+                from launcher.services import sessions as _sessions
+
+                _sessions.remove_active(self._paths, game_name)
+            except (OSError, ValueError):
+                pass
         self.game_finished.emit(game_name, exit_code)

@@ -154,12 +154,14 @@ class ClearDataDialog(QDialog):
         stats = [self._ctx.state.get(n) for n in names]
         launched = sum(1 for s in stats if s.last_played or s.launch_count)
         favourites = sum(1 for s in stats if s.favorite)
+        tagged = sum(1 for s in stats if s.tags or s.notes or s.hidden)
         art = sum(len(self._ctx.artwork.files_for(n)) for n in names)
         details = {
             DataKind.HISTORY: f"{sessions} session(s) — {DataKind.HISTORY.description}",
             DataKind.PLAYTIME: f"{format_duration(playtime)} — {DataKind.PLAYTIME.description}",
             DataKind.LAUNCHES: f"{launched} game(s) — {DataKind.LAUNCHES.description}",
             DataKind.FAVORITES: f"{favourites} starred",
+            DataKind.COLLECTIONS: f"{tagged} tagged, noted or hidden",
             DataKind.ARTWORK: f"{art} image(s) — {DataKind.ARTWORK.description}",
             DataKind.LOGS: DataKind.LOGS.description,
         }

@@ -7,6 +7,7 @@ lives here so both agree on one shape, whatever the server sends.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -140,6 +141,55 @@ class SharedGame:
     key: str
     name: str
     players: int
+
+
+@dataclass(frozen=True)
+class CommonGame:
+    """A game you own that friends play too, with who and how much."""
+
+    key: str
+    name: str
+    friend_names: tuple[str, ...] = ()
+    friends_seconds: int = 0
+    mine_seconds: int = 0
+
+
+def common_games(
+    friends: tuple[Friend, ...] | list[Friend],
+    *,
+    local_name: Callable[[str], str | None],
+    local_seconds: Callable[[str], int] | None = None,
+) -> list[CommonGame]:
+    """Games the user owns that at least one friend has played.
+
+    Matched by game key across friends' top games. Sorted by friends'
+    total time, so the most-shared habit comes first. Pure.
+    """
+    by_key: dict[str, dict[str, Any]] = {}
+    for friend in friends:
+        for total in friend.top_games:
+            name = local_name(total.key)
+            if name is None:
+                continue
+            entry = by_key.setdefault(
+                total.key, {"name": name, "friends": [], "seconds": 0}
+            )
+            entry["name"] = name
+            if friend.name not in entry["friends"]:
+                entry["friends"].append(friend.name)
+            entry["seconds"] += total.seconds
+    found = [
+        CommonGame(
+            key=key,
+            name=str(entry["name"]),
+            friend_names=tuple(entry["friends"]),
+            friends_seconds=int(entry["seconds"]),
+            mine_seconds=local_seconds(key) if local_seconds else 0,
+        )
+        for key, entry in by_key.items()
+    ]
+    found.sort(key=lambda g: (g.friends_seconds, len(g.friend_names)), reverse=True)
+    return found
 
 
 @dataclass(frozen=True)

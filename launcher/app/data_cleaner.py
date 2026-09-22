@@ -20,6 +20,7 @@ class DataKind(Enum):
     PLAYTIME = "playtime"
     LAUNCHES = "launches"
     FAVORITES = "favorites"
+    COLLECTIONS = "collections"
     ARTWORK = "artwork"
     LOGS = "logs"
 
@@ -30,6 +31,7 @@ class DataKind(Enum):
             DataKind.PLAYTIME: "Total playtime",
             DataKind.LAUNCHES: "Last played and launch count",
             DataKind.FAVORITES: "Favourites",
+            DataKind.COLLECTIONS: "Tags, notes and hidden",
             DataKind.ARTWORK: "Artwork",
             DataKind.LOGS: "Logs",
         }[self]
@@ -41,6 +43,7 @@ class DataKind(Enum):
             DataKind.PLAYTIME: "The hours shown in the library",
             DataKind.LAUNCHES: "Recently played order and Most launched",
             DataKind.FAVORITES: "Stars",
+            DataKind.COLLECTIONS: "Tags, personal notes and hidden games",
             DataKind.ARTWORK: "Covers, banners, logos and icons on disk",
             DataKind.LOGS: "Output kept since the launcher started",
         }[self]
@@ -49,7 +52,13 @@ class DataKind(Enum):
 #: What "Clear everything" ticks.
 ALL_KINDS = frozenset(DataKind)
 #: Kept in the database; a copy is taken before these are cleared.
-_RECORDED = {DataKind.HISTORY, DataKind.PLAYTIME, DataKind.LAUNCHES, DataKind.FAVORITES}
+_RECORDED = {
+    DataKind.HISTORY,
+    DataKind.PLAYTIME,
+    DataKind.LAUNCHES,
+    DataKind.FAVORITES,
+    DataKind.COLLECTIONS,
+}
 
 
 @dataclass
@@ -89,9 +98,14 @@ def clear(
         state.reset_launches(names)
     if DataKind.FAVORITES in kinds:
         state.clear_favorites(names)
+    if DataKind.COLLECTIONS in kinds:
+        state.clear_collections(names)
     if DataKind.ARTWORK in kinds:
         for name in names:
             report.artwork_files += context.artwork.remove(name)
+    if DataKind.LOGS in kinds:
+        for name in names or sorted(context.state.known_names()):
+            context.logs.clear(name)
     return report
 
 

@@ -129,6 +129,20 @@ class RestoreResult:
     errors: list[str] = field(default_factory=list)
 
 
+@dataclass
+class VerifyReport:
+    """The structural health of one snapshot."""
+
+    snapshot: Snapshot
+    files: int = 0
+    total_bytes: int = 0
+    problems: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.problems
+
+
 # --------------------------------------------------------------------------
 # file helpers
 # --------------------------------------------------------------------------
@@ -240,6 +254,36 @@ class BackupService:
     def latest(self) -> Snapshot | None:
         snapshots = self.snapshots()
         return snapshots[0] if snapshots else None
+
+    def verify(self, snapshot: Snapshot) -> VerifyReport:
+        """Check a snapshot is complete and readable.
+
+        Compares the files on disk with the snapshot's own manifest and
+        reports anything missing, unreadable, or a size mismatch, without
+        changing anything.
+        """
+        report = VerifyReport(snapshot=snapshot)
+        if Snapshot.load(snapshot.path) is None:
+            report.problems.append("The snapshot manifest is missing or corrupt.")
+            return report
+        if not snapshot.data.is_dir():
+            report.problems.append("The snapshot data folder is missing.")
+            return report
+        for relative, path in _walk(snapshot.data, base=snapshot.data):
+            try:
+                st = path.lstat()
+            except OSError as e:
+                report.problems.append(f"{relative}: cannot read ({e})")
+                continue
+            report.files += 1
+            report.total_bytes += st.st_size
+        if snapshot.files and report.files != snapshot.files:
+            report.problems.append(
+                f" Holds {report.files} file(s) but the manifest says {snapshot.files}."
+            )
+        if snapshot.total_bytes and report.total_bytes != snapshot.total_bytes:
+            report.problems.append("Sizes do not match the manifest; files changed.")
+        return report
 
     def disk_usage(self) -> int:
         """Real bytes used by all snapshots, counting shared files once."""
@@ -378,6 +422,26 @@ class BackupService:
             f"{free // (1024 * 1024)} MB is free."
         )
 
+    def _check_restore_space(self, source: Path) -> None:
+        """Refuse a restore that would leave the disk too full."""
+        needed = 0
+        for _, path in _walk(source, base=source):
+            try:
+                if not path.is_symlink():
+                    needed += path.lstat().st_size
+            except OSError:
+                continue
+        try:
+            free = shutil.disk_usage(self.store).free
+        except OSError:
+            return
+        if free - needed < SPACE_MARGIN:
+            raise BackupError(
+                "Not enough free disk space to restore: it needs about "
+                f"{needed // (1024 * 1024)} MB and only "
+                f"{free // (1024 * 1024)} MB is free."
+            )
+
     def _can_clone(self, sample: Path) -> bool:
         probe = self.root / ".clone-probe"
         try:
@@ -445,6 +509,7 @@ class BackupService:
         if not source.is_dir():
             raise BackupError(f"The backup has no folder '{folder}'.")
 
+        self._check_restore_space(source)
         result = RestoreResult()
         if safety_snapshot and self.store.is_dir():
             result.safety = self.create(f"before restoring {snapshot.label}")

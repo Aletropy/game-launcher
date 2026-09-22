@@ -10,8 +10,16 @@ import contextlib
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut, QShowEvent, QTextDocument
+from PySide6.QtGui import (
+    QCloseEvent,
+    QIcon,
+    QKeySequence,
+    QShortcut,
+    QShowEvent,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -22,6 +30,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QStatusBar,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -29,6 +38,7 @@ from PySide6.QtWidgets import (
 from launcher.app.data_cleaner import DataKind
 from launcher.app.library_controller import LibraryController
 from launcher.domain.models import Game, SortOrder
+from launcher.ui.close_policy import decide
 from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
 from launcher.ui.dialogs.artwork_wizard import ArtworkWizard
 from launcher.ui.dialogs.backups_dialog import BackupsDialog
@@ -39,6 +49,7 @@ from launcher.ui.dialogs.import_dialog import ImportGamesDialog
 from launcher.ui.dialogs.saves_dialog import SavesDialog
 from launcher.ui.dialogs.settings_dialog import SettingsDialog
 from launcher.ui.theme import notifier
+from launcher.ui.tray import TrayController
 from launcher.ui.widgets import log_view
 from launcher.ui.widgets.detail_panel import GameDetailPanel
 from launcher.ui.widgets.friends import FriendsView
@@ -65,14 +76,33 @@ class MainWindow(QMainWindow):
 
         #: One log buffer per game, kept whether or not it is selected.
         self._logs: dict[str, QTextDocument] = {}
+        #: Open failure cards, at most one per game.
+        self._failure_dialogs: dict[str, QWidget] = {}
         self._artwork_sticky = StickyChoice()
         self._remove_sticky = StickyChoice()
         #: The appearance changed while the window was hidden.
         self._appearance_stale = False
+        #: True once the tray's Quit path confirmed; lets closeEvent through.
+        self._quitting = False
+        self._tray_controller = TrayController(
+            self._tray_icon(),
+            lambda: list(self._ctx.processes.running_games),
+            self._ctx.processes.elapsed_seconds,
+            parent=self,
+        )
+        self._tray_controller.show_requested.connect(self._toggle_visible)
+        self._tray_controller.quit_requested.connect(self.request_quit)
+        self._tray_controller.stop_requested.connect(self._lib.stop)
 
         self._setup_ui()
         self._connect()
         self._lib.reload()
+        self._sync_tray()
+
+    def _tray_icon(self) -> QIcon:
+        if self._ctx.paths.icon.is_file():
+            return QIcon(str(self._ctx.paths.icon))
+        return QIcon()
 
     # -- construction --------------------------------------------------
 
@@ -134,6 +164,9 @@ class MainWindow(QMainWindow):
             "Back up now",
             lambda: self._lib.saves.backup_in_background("manual backup", pinned=True),
         )
+        self._saves_menu.addSeparator()
+        self._saves_menu.addAction("Export saves…", self._export_saves)
+        self._saves_menu.addAction("Import saves…", self._import_saves)
         self._saves_btn.setMenu(self._saves_menu)
         self._saves_btn.setProperty("menu", "true")
         layout.addWidget(self._saves_btn)
@@ -202,6 +235,10 @@ class MainWindow(QMainWindow):
         detail.stop_requested.connect(self._lib.stop)
         detail.edit_requested.connect(self._edit_game)
         detail.favorite_requested.connect(self._lib.toggle_favorite)
+        detail.organize_requested.connect(self._organize_game)
+        detail.hide_requested.connect(self._hide_game)
+        detail.sessions_requested.connect(self._open_sessions)
+        detail.shortcut_requested.connect(self._shortcut_game)
         detail.artwork_requested.connect(self._fetch_artwork)
         detail.remove_requested.connect(self._remove_game)
         detail.clear_log_requested.connect(self._clear_log)
@@ -223,6 +260,7 @@ class MainWindow(QMainWindow):
         procs.game_finished.connect(self._on_game_finished)
         procs.game_output.connect(self._on_game_output)
         procs.game_error.connect(self._on_game_output)
+        self._lib.recorder.launch_failed.connect(self._show_launch_failure)
 
         notifier().changed.connect(self._on_appearance_changed)
 
@@ -231,6 +269,7 @@ class MainWindow(QMainWindow):
         tools.tool_started.connect(
             lambda label: self.statusBar().showMessage(f"Started {label}.", 4000)
         )
+        self._ctx.settings.changed.connect(self._on_settings_changed)
 
     def _install_shortcuts(self) -> None:
         """Keyboard access to the things people do repeatedly."""
@@ -253,6 +292,7 @@ class MainWindow(QMainWindow):
         visible = self._lib.visible_games()
         selected = self._sidebar.selected_game()
         self._sidebar.set_filter(self._lib.filter)
+        self._sidebar.set_known_tags(self._lib.all_tags())
         self._sidebar.set_games(visible, select=selected)
         self._sidebar.set_counts(len(visible), len(self._lib.games))
         self._sidebar.set_sort_order(self._lib.sort_order.value)
@@ -406,6 +446,58 @@ class MainWindow(QMainWindow):
         if self._lib.update_game(name, dialog.get_config()):
             self._sidebar.select_game(dialog.get_config().name)
 
+    def _organize_game(self, name: str) -> None:
+        from launcher.ui.dialogs.organize_dialog import OrganizeDialog
+
+        game = self._lib.game(name)
+        if game is None:
+            return
+        dialog = OrganizeDialog(name, game.tags, game.notes, parent=self)
+        if not dialog.exec():
+            return
+        self._lib.set_tags(name, dialog.get_tags())
+        self._lib.set_notes(name, dialog.get_notes())
+
+    def _hide_game(self, name: str) -> None:
+        game = self._lib.game(name)
+        if game is None:
+            return
+        hide = not game.hidden
+        self._lib.set_hidden(name, hide)
+        self.statusBar().showMessage(
+            (
+                f"'{name}' hidden. Tick Filters → Show hidden games to see it."
+                if hide
+                else f"'{name}' is visible again."
+            ),
+            8000,
+        )
+
+    def _open_sessions(self, name: str) -> None:
+        from launcher.ui.dialogs.sessions_dialog import SessionsDialog
+
+        if self._lib.game(name) is None:
+            return
+        dialog = SessionsDialog(self._ctx, name, parent=self)
+        dialog.exec()
+        self._lib.refresh_game(name)
+
+    def _shortcut_game(self, name: str, action: str) -> None:
+        from launcher.services import shortcuts
+
+        if action == "remove":
+            if shortcuts.remove(name):
+                self.statusBar().showMessage(f"Desktop shortcut removed for {name}.", 6000)
+            else:
+                self.statusBar().showMessage(f"No desktop shortcut for {name}.", 6000)
+            return
+        try:
+            path = shortcuts.create(name, artwork=self._ctx.artwork)
+        except OSError as e:
+            warn(self, "Desktop Shortcut", str(e))
+            return
+        self.statusBar().showMessage(f"Desktop shortcut created: {path.name}.", 6000)
+
     def _remove_game(self, name: str) -> None:
         if self._ctx.settings.get_bool("confirm_remove"):
             answer = ask(
@@ -422,6 +514,9 @@ class MainWindow(QMainWindow):
                 return
         self._logs.pop(name, None)
         self._lib.remove_game(name)
+        from launcher.services import shortcuts
+
+        shortcuts.remove(name)
 
     # -- artwork -------------------------------------------------------
 
@@ -485,8 +580,53 @@ class MainWindow(QMainWindow):
             return
         if tool == "open":
             self._ctx.prefix_tools.open_folder(game.prefix)
+        elif tool == "rebuild":
+            self._rebuild_prefix(name)
         else:
             self._ctx.prefix_tools.run(tool, game.prefix)
+
+    def _rebuild_prefix(self, name: str) -> None:
+        from launcher.domain.prefix_health import inspect_health
+        from launcher.ui.dialogs.saves_dialog import human
+
+        game = self._lib.game(name)
+        if game is None:
+            return
+        if self._lib.is_running(name):
+            warn(self, "Rebuild Prefix", f"Stop '{name}' first, then rebuild.")
+            return
+        path = self._ctx.prefix_tools.resolve(game.prefix)
+        health = inspect_health(path)
+        if not health.exists:
+            warn(self, "Rebuild Prefix", "The prefix does not exist yet — nothing to rebuild.")
+            return
+        lines = [
+            f"Delete the prefix for '{name}' so Proton builds it fresh?",
+            "",
+            f"Location: {path}",
+            f"Size: {human(health.size_bytes)} in {health.file_count} file(s).",
+        ]
+        if health.broken_save_links:
+            lines.append(
+                f"{len(health.broken_save_links)} shared-save link(s) were replaced "
+                "and will be restored on next launch."
+            )
+        lines += [
+            "",
+            "Saves live in the shared store and are kept; installed game "
+            "files inside the prefix are not.",
+        ]
+        if ask(self, "Rebuild Prefix", "\n".join(lines), default=Answer.NO) is not Answer.YES:
+            return
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._ctx.prefix_tools.rebuild(game.prefix)
+        except OSError as e:
+            warn(self, "Rebuild Prefix", str(e))
+            return
+        finally:
+            self.unsetCursor()
+        self.statusBar().showMessage(f"Prefix rebuilt for {name}.", 8000)
 
     def _backup_saves(self, name: str) -> None:
         self._lib.saves.backup_in_background(f"manual backup ({name})", pinned=True)
@@ -519,6 +659,17 @@ class MainWindow(QMainWindow):
     def _open_saves(self) -> None:
         SavesDialog(self._ctx, self._lib.saves, parent=self).exec()
         self._lib.reload()
+
+    def _export_saves(self) -> None:
+        from launcher.ui.dialogs.save_exchange_dialog import SaveExchangeDialog
+
+        SaveExchangeDialog(self._ctx, mode="export", parent=self).exec()
+
+    def _import_saves(self) -> None:
+        from launcher.ui.dialogs.save_exchange_dialog import SaveExchangeDialog
+
+        if SaveExchangeDialog(self._ctx, mode="import", parent=self).exec():
+            self._lib.reload()
 
     def _open_settings(self, page: str = "appearance") -> None:
         dialog = SettingsDialog(self._ctx, parent=self, page=page)
@@ -562,6 +713,11 @@ class MainWindow(QMainWindow):
             doc = log_view.new_document(
                 self._ctx.settings.get_int("log_max_lines")
             )
+            # Seed with what previous runs left on disk, so a crash can
+            # be diagnosed after a restart.
+            tail = self._ctx.logs.recent(name, max_chars=30_000)
+            if tail:
+                log_view.append(doc, tail if tail.endswith("\n") else tail + "\n")
             self._logs[name] = doc
         return doc
 
@@ -569,6 +725,7 @@ class MainWindow(QMainWindow):
         self._logs[name] = log_view.new_document(
             self._ctx.settings.get_int("log_max_lines")
         )
+        self._ctx.logs.clear(name)
         if self._detail_shows(name):
             self._detail.attach_log(self._logs[name])
 
@@ -578,17 +735,41 @@ class MainWindow(QMainWindow):
         if self._detail_shows(name):
             self._detail.attach_log(self._logs[name])
             self._detail.set_running(True)
+        self._refresh_tray()
 
     def _on_game_finished(self, name: str, _exit_code: int) -> None:
         self._sidebar.set_running(name, False)
         if self._detail_shows(name):
             self._detail.set_running(False)
+        self._refresh_tray()
 
     def _on_game_output(self, name: str, text: str) -> None:
         # Buffers accumulate whether or not the game is on screen.
         log_view.append(self._log_for(name), text)
         if self._detail_shows(name):
             self._detail.follow_log()
+
+    def _show_launch_failure(self, name: str) -> None:
+        """Open the failure card for a crashed session, at most one per game."""
+        from launcher.ui.dialogs.launch_failure import LaunchFailureDialog
+
+        existing = self._failure_dialogs.get(name)
+        if existing is not None:
+            existing.raise_()
+            existing.activateWindow()
+            return
+        assessment = self._lib.recorder.last_crash.get(name)
+        dialog = LaunchFailureDialog(
+            self._ctx,
+            name,
+            summary=assessment.summary if assessment else "",
+            hint=assessment.hint if assessment else "",
+            warnings=[f"Before launching: {w}" for w in self._lib.last_warnings.get(name, [])],
+            parent=self,
+        )
+        dialog.destroyed.connect(lambda _obj=None, n=name: self._failure_dialogs.pop(n, None))
+        self._failure_dialogs[name] = dialog
+        dialog.show()
 
     # -- lifetime ------------------------------------------------------
 
@@ -597,16 +778,135 @@ class MainWindow(QMainWindow):
         if self._appearance_stale:
             self._on_appearance_changed()
 
-    def closeEvent(self, event: QCloseEvent) -> None:
+    # -- tray ----------------------------------------------------------
+
+    @staticmethod
+    def _tray_available() -> bool:
+        return TrayController.is_available()
+
+    def _tray_enabled(self) -> bool:
+        try:
+            return bool(self._ctx.settings.get_bool("close_to_tray"))
+        except (AttributeError, RuntimeError):
+            return False
+
+    def _tray_active(self) -> bool:
+        return self._tray_enabled() and self._tray_controller.active
+
+    def _on_settings_changed(self, key: str, _value: object) -> None:
+        if key in ("close_to_tray", "close_to_tray_asked"):
+            self._sync_tray()
+
+    def _sync_tray(self) -> None:
+        """Create or drop the tray icon to match settings and platform."""
+        self._tray_controller.sync(self._tray_enabled(), self.isVisible())
+
+    @staticmethod
+    def _format_elapsed(seconds: int) -> str:
+        return TrayController.format_elapsed(seconds)
+
+    def _refresh_tray(self) -> None:
+        """Rebuild the tray menu and tooltip, including live timers."""
+        self._tray_controller.refresh(self.isVisible())
+
+    @property
+    def _tray(self) -> QSystemTrayIcon | None:
+        return self._tray_controller._tray
+
+    @property
+    def _tray_menu(self) -> QMenu | None:
+        return self._tray_controller._menu
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        # Left-click shows; right-click is the menu with per-game Stop.
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._show_window()
+
+    def _toggle_visible(self) -> None:
+        if self.isVisible():
+            self.hide()
+        else:
+            self._show_window()
+
+    def _show_window(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def play_game(self, name: str) -> None:
+        """Play a game by name, e.g. from a second-instance request."""
+        self._launch_game(name)
+        self._show_window()
+
+    def offer_tray_choice(self) -> None:
+        """Ask once whether closing should minimize to the tray."""
+        try:
+            asked = self._ctx.settings.get_bool("close_to_tray_asked")
+        except (AttributeError, RuntimeError):
+            return
+        if asked or not self._tray_available():
+            self._sync_tray()
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Stay in the tray?")
+        box.setText(
+            "When the window is closed, the launcher can stay in the "
+            "system tray. Games keep running and their playtime keeps "
+            "being counted.\n\nYou can change this later in Settings → Library."
+        )
+        box.setIcon(QMessageBox.Icon.Question)
+        to_tray = box.addButton("Minimize to tray", QMessageBox.ButtonRole.AcceptRole)
+        on_close = box.addButton("Quit on close", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(to_tray)
+        box.exec()
+        use_tray = box.clickedButton() is to_tray
+        self._ctx.settings.update(
+            {"close_to_tray": use_tray, "close_to_tray_asked": True}
+        )
+        self._sync_tray()
+        # Silence "unused" without changing behaviour when dismissed.
+        _ = on_close
+
+    def request_quit(self) -> None:
+        """Quit for real from the tray. Games keep running detached."""
         running = self._ctx.processes.running_games
         if running and ask(
             self,
             "Quit",
             "These games are still running:\n  "
             + "\n  ".join(running)
-            + "\n\nQuit anyway? They will keep running.",
+            + "\n\nQuit anyway? They keep running, and their full "
+            "playtime is recorded when they exit.",
             default=Answer.NO,
         ) is not Answer.YES:
+            return
+        self._quitting = True
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            app.quit()
+        else:
+            self.close()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        decision = decide(
+            self._quitting, self._tray_active(), self._ctx.processes.running_games
+        )
+        if decision.action == "hide":
+            self.hide()
+            self._tray_controller.hint_once()
             event.ignore()
             return
+        if decision.action == "confirm":
+            running = self._ctx.processes.running_games
+            if ask(
+                self,
+                "Quit",
+                "These games are still running:\n  "
+                + "\n  ".join(running)
+                + "\n\nQuit anyway? They keep running, and their full "
+                "playtime is recorded when they exit.",
+                default=Answer.NO,
+            ) is not Answer.YES:
+                event.ignore()
+                return
         super().closeEvent(event)

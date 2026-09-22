@@ -7,6 +7,8 @@ service layers.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -52,6 +54,20 @@ class GameStats:
     last_played: datetime | None = None
     added: datetime | None = None
     launch_count: int = 0
+    tags: tuple[str, ...] = ()
+    notes: str = ""
+    hidden: bool = False
+
+
+def normalize_tags(raw: str | Collection[str]) -> tuple[str, ...]:
+    """Split, lowercase and dedupe tags, preserving first-seen order."""
+    parts = re.split(r"[,;]", raw) if isinstance(raw, str) else [str(p) for p in raw]
+    seen: list[str] = []
+    for part in parts:
+        tag = part.strip().casefold()
+        if tag and tag not in seen:
+            seen.append(tag)
+    return tuple(seen)
 
 
 @dataclass
@@ -80,6 +96,18 @@ class Game:
     @property
     def is_favorite(self) -> bool:
         return self.stats.favorite
+
+    @property
+    def tags(self) -> tuple[str, ...]:
+        return self.stats.tags
+
+    @property
+    def notes(self) -> str:
+        return self.stats.notes
+
+    @property
+    def hidden(self) -> bool:
+        return self.stats.hidden
 
     @property
     def playtime_seconds(self) -> int:

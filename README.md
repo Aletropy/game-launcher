@@ -8,11 +8,11 @@ Steam Flatpak container.
 One file, run once:
 
 ```bash
-./milso-launcher-2.1.0.run             # install, or upgrade in place
-./milso-launcher-2.1.0.run --target DIR
-./milso-launcher-2.1.0.run --yes       # no questions
-./milso-launcher-2.1.0.run --check     # dependencies only, changes nothing
-./milso-launcher-2.1.0.run --extract DIR
+./milso-launcher-2.2.0.run             # install, or upgrade in place
+./milso-launcher-2.2.0.run --target DIR
+./milso-launcher-2.2.0.run --yes       # no questions
+./milso-launcher-2.2.0.run --check     # dependencies only, changes nothing
+./milso-launcher-2.2.0.run --extract DIR
 ```
 
 It verifies its own payload, unpacks itself, finds an existing
@@ -104,8 +104,8 @@ byte-identical.
 To install elsewhere:
 
 ```bash
-tar xzf milso-launcher-2.1.0.tar.gz
-cd milso-launcher-2.1.0
+tar xzf milso-launcher-2.2.0.tar.gz
+cd milso-launcher-2.2.0
 ./install.sh
 ```
 
@@ -129,28 +129,48 @@ launcher/
     models.py    GameConfig, GameStats, Game, sorting and formatting
     config.py    reading and writing bash .conf files
     prefixes.py  prefix resolution, mirroring milso-launcher.sh
+    prefix_health  prefix size, freshness and broken save links
+    crash_signatures  telling a crash from a quit
+    outcome.py   typed Ok/Err results and launch blocks
     journal.py   play sessions: heatmap, streaks, totals
     backup_policy  what backups leave out and how long they are kept
+    friends.py   snapshots, leaderboards and games in common
   data/        persistence, each taking a Paths in its constructor
     paths.py         every filesystem location, as an object
     game_repository  games/*.conf
     settings_store   preferences (JSON)
-    state_store      playtime, sessions, favourites (SQLite)
+    preferences      typed access over the settings
+    state_store      playtime, sessions, favourites, tags (SQLite)
   services/    side effects
     artwork/     specs, store + display cache, cleanup
     process.py   launching games and timing sessions
+    sessions.py  active launches on disk (locked) and pending sidecars
+    session_watcher.py  detached per-game watcher for full playtime
+    game_log.py  per-game log files that survive restarts
     save_store.py  the shared Saves/ folder and the links into it
+    save_exchange.py  export/import saves as zip archives
     backups.py   incremental snapshots of Saves/, and restoring them
-    prefix_tools winecfg / winetricks / open folder
+    prefix_tools winecfg / winetricks / open folder / rebuild
+    protons.py   installed Proton builds for the game editor
+    steam_import.py  installed Steam games worth adding
+    shortcuts.py per-game .desktop entries
+    updates.py   release-feed version checks
     sgdb.py      SteamGridDB
     importer.py  finding games in a folder
     tasks.py     bounded background work
   app/         composition root and orchestration
     context.py           builds the object graph
     library_controller   library state and every mutation
+    session_recorder     launches, sessions and crash diagnosis
+    launch_checks        pre-launch blocks and warnings
+    single_instance      one copy per user, with request forwarding
+    startup.py           per-stage startup timings
     save_keeper          automatic sharing and backups
     main.py              entry point
   ui/          views, which talk to the controller and nothing else
+    tray.py        the system tray icon and its live menu
+    close_policy.py  hide vs. confirm vs. quit, without Qt
+    errors.py      one consistent way to show failures
 ```
 
 The rule that keeps this honest: nothing below `app/` imports a global,
@@ -163,9 +183,10 @@ with tempfile.TemporaryDirectory() as d:
     ctx = AppContext.for_testing(Path(d))
 ```
 
-`tests/smoke.py` is a dependency-free suite (85 tests) covering the
-domain, the repositories, the services, the shell script and headless UI
-construction:
+`tests/smoke.py` is a dependency-free suite covering the domain, the
+repositories, the services, the shell script and headless UI
+construction; feature tests live in `tests/cases/test_*.py`, one module
+per area, loaded by the same runner so CI needs one command:
 
 ```bash
 .venv/bin/python tests/smoke.py
@@ -188,12 +209,45 @@ construction:
 
 Playtime is recorded per session. A session shorter than 20 seconds is
 treated as a failed launch and does not count, so a game that crashes on
-startup does not inflate the number.
+startup does not inflate the number. How each session ended (exit code,
+crashed or not) is kept with it.
+
+**Staying in the tray.** The first time the launcher starts it asks
+whether closing the window should keep it in the system tray; Settings →
+Library changes it later. In the tray, left-click shows the window and
+the menu shows running games with live timers, per-game Stop and Quit.
+Playtime keeps counting with the window closed. Quitting never kills a
+game: a detached watcher records its full session when it exits, even if
+the launcher is gone by then.
+
+Only one copy runs per user. Starting it again (or
+`milso-launcher --play "Name"`, which desktop shortcuts use) forwards to
+the running one and exits.
+
+**When a game fails.** Before launching, the launcher checks the
+executable, the prefix, the Steam Flatpak, the Proton path and free disk,
+and tells you everything at once instead of one dialog per problem. When
+a session looks like a crash, a failure card names the likely cause,
+shows the log tail, and offers Copy log, a `--dry-run` of the launch
+configuration, and Open prefix. Game output is also kept in
+`~/.local/share/milso-launcher/logs/` across restarts.
+
+**Collections.** The ⋯ menu holds Tags & notes (comma-separated tags,
+free-form notes) and Hide. Search finds games by tag, Filters offers
+every tag in use and a Show-hidden toggle, and Settings → Data can clear
+them. The Covers button above the list switches rows for a cover grid.
+
+**Sessions.** The ⋯ menu's Sessions… lists one game's sessions with
+their dates, lengths and outcomes. Delete, correct or manually add a
+session; totals follow. A desktop shortcut per game (⋯ → Desktop
+shortcut) starts it from the menu or taskbar.
 
 **Importing** scans a folder for `.exe` files and guesses which are
 games: installers, crash handlers, redistributables and anything inside
 a Wine prefix are listed but unticked, and where a folder holds several
 executables the largest is preferred. Review the list before importing.
+The Steam button reads installed Steam games (name, app id and best
+`.exe` guess) and ticks the ones missing from your library.
 
 Filters are remembered between sessions. The count under the list says
 how many games they hide, with a link that clears them.
@@ -335,15 +389,24 @@ changed in Settings → Saves & backups.
 the snapshots and what each holds. Opened from a game, it goes straight
 to that game's folder. **Restore this folder** or **Restore everything**
 puts files back as they were and removes files created since, leaving
-excluded caches alone. It refuses while a game is running and always
-takes a snapshot first, so a restore can itself be undone.
+excluded caches alone. It refuses while a game is running, refuses when
+the disk would fill past the 512 MB margin, and always takes a snapshot
+first, so a restore can itself be undone. **Verify** checks a snapshot
+is complete and readable against its own manifest.
+
+**Moving machines.** Saves → Export saves… writes the shared store (or
+chosen folders) to a zip with a manifest; Import saves… previews an
+archive, takes a safety snapshot, and merges it newer-wins, quarantining
+every loser into `Saves/.conflicts/` like prefix sharing does.
 
 ## Wine prefixes
 
 By default every game shares one prefix, `./Prefix`. Writing a folder
 name into `.prefix-name` changes which one.
 
-A game can instead use its own, set in **Edit → Wine Prefix**:
+A game can instead use its own, set in **Edit → Wine Prefix**,
+alongside a **Proton** picker listing the builds installed on the
+machine (or a custom path, which is checked and warns when missing):
 
 | Value | Resolves to |
 |---|---|
@@ -359,7 +422,9 @@ such a path may not be visible there without a `flatpak override`.
 
 Moving a game to its own prefix does not carry over its saves or
 registry; it will look freshly installed. Use the ⋯ → Saves menu, or
-`repair-prefix.sh`, to move save data.
+`repair-prefix.sh`, to move save data. The ⋯ → Prefix menu's **Rebuild
+prefix…** deletes a prefix after showing its size and broken save links,
+so Proton builds it fresh on next launch; saves are shared and survive.
 
 `launcher/domain/prefixes.py` and `resolve_conf_overrides()` in
 `milso-launcher.sh` implement the same rules, and a smoke test runs both
@@ -382,8 +447,10 @@ Removing a game deletes its artwork and recorded state with it.
 
 An opt-in tab that shows what friends are playing right now, the games
 they play most, and a leaderboard for this week, all time, or one game.
-There's no chat and nothing to reply to. The only thing you can do with
-another user is send or answer a friend request.
+**In common** lists the games you own that friends play too, with who
+and how long on each side. There's no chat and nothing to reply to. The
+only thing you can do with another user is send or answer a friend
+request.
 
 **Offline Mode is the default.** In Offline Mode the launcher makes no
 network requests at all, and nothing outside the Friends tab changes
@@ -422,9 +489,21 @@ environment variable:
 MILSO_FRIENDS_SERVER=http://127.0.0.1:8765 ./run.sh
 ```
 
-The server uses plain HTTP, so run it only on a network you trust.
-Tokens are stored hashed on the server, and in
+The server uses plain HTTP, so run it only on a network you trust. To
+expose it further, put it behind a reverse proxy with TLS (e.g. Caddy
+or nginx) and keep the token database (`--db`) on a backed-up volume;
+the server itself is stateless apart from that file. Tokens are stored
+hashed on the server, and in
 `~/.config/milso-launcher/friends.json` (mode 0600) on each client.
+
+## Updates
+
+Releases are versioned `.run` files. Settings → About shows the running
+version and, once a release feed URL is configured there, can check it:
+a JSON document of the form
+`{"version": "2.2.0", "url": "https://…", "notes": "…"}`, compared
+numerically against the installed version, with a Download button when
+newer. Empty feed means never check; nothing phones home by default.
 
 ## Per-game configuration
 
@@ -458,3 +537,4 @@ backticks are safe even though the file is `source`d.
 | Save backups | `backups/saves/<timestamp>/` |
 | Preferences | `~/.config/milso-launcher/settings.json` |
 | Playtime, sessions, favourites | `~/.local/share/milso-launcher/state.db` |
+| Game logs | `~/.local/share/milso-launcher/logs/` |

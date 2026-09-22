@@ -25,6 +25,7 @@ DEFAULTS: dict[str, Any] = {
     # Behaviour.
     "confirm_remove": True,
     "close_to_tray": False,
+    "close_to_tray_asked": False,
     "log_max_lines": 5000,
     "fetch_artwork_on_add": True,
     # Appearance.
@@ -47,6 +48,9 @@ DEFAULTS: dict[str, Any] = {
     "friends_mode": "offline",
     "friends_server_url": "http://10.0.0.25:8765",
     "friends_share_presence": True,
+    # Release feed checked by Settings → About. Empty means never check.
+    "update_feed_url": "",
+    "update_last_check": "",
     # Where the Browse button starts when picking a game.
     "last_game_folder": "",
     "last_import_folder": "",

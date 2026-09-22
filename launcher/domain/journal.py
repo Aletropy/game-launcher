@@ -20,6 +20,10 @@ class Session:
     #: Reconstructed from totals recorded before sessions existed; the
     #: date is the day the game was last played, not when it was played.
     imported: bool = False
+    #: Process exit code; 0 means the game exited cleanly.
+    exit_code: int = 0
+    #: The exit looks like a crash rather than a quit.
+    crashed: bool = False
 
     @property
     def day(self) -> date:

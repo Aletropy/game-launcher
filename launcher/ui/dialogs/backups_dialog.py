@@ -109,6 +109,10 @@ class BackupsDialog(QDialog):
         self._delete_btn = QPushButton("Delete")
         self._delete_btn.clicked.connect(self._delete)
         row.addWidget(self._delete_btn)
+        self._verify_btn = QPushButton("Verify")
+        self._verify_btn.setToolTip("Check this backup is complete and readable")
+        self._verify_btn.clicked.connect(self._verify)
+        row.addWidget(self._verify_btn)
         left_layout.addLayout(row)
         splitter.addWidget(left)
 
@@ -303,6 +307,7 @@ class BackupsDialog(QDialog):
         has = snapshot is not None
         self._pin_btn.setEnabled(has)
         self._delete_btn.setEnabled(has)
+        self._verify_btn.setEnabled(has)
         self._restore_all_btn.setEnabled(has)
         self._restore_folder_btn.setEnabled(has and bool(self._folder()))
         self._pin_btn.setText(
@@ -341,6 +346,28 @@ class BackupsDialog(QDialog):
         except OSError as e:
             warn(self, "Delete Backup", str(e))
         self.refresh()
+
+    def _verify(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        snapshot = self._snapshot()
+        if snapshot is None:
+            return
+        report = self._ctx.backups.verify(snapshot)
+        if report.ok:
+            QMessageBox.information(
+                self,
+                "Verify Backup",
+                f"The backup from {snapshot.label} is complete:\n"
+                f"{report.files} file(s), {human(report.total_bytes)}.",
+            )
+        else:
+            warn(
+                self,
+                "Verify Backup",
+                f"The backup from {snapshot.label} has problems:\n"
+                + "\n".join(report.problems[:8]),
+            )
 
     def _restore_folder(self) -> None:
         folder = self._folder()

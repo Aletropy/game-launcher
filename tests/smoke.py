@@ -1642,31 +1642,35 @@ def detail_menu_submenus_survive_garbage_collection() -> None:
         # blocks the suite. Only the menu wiring is under test here.
         ctx.prefix_tools.run = lambda *_: True
         ctx.prefix_tools.open_folder = lambda *_: True
+        window._rebuild_prefix = lambda *_: True
 
         menu = window._detail._more_btn.menu()
         assert menu is not None
         submenus = {
             a.text(): a.menu() for a in menu.actions() if a.menu() is not None
         }
-        assert set(submenus) == {"Prefix", "Saves"}, sorted(submenus)
+        assert set(submenus) == {"Desktop shortcut", "Prefix", "Saves"}, sorted(submenus)
 
         prefix_menu = submenus["Prefix"]
-        labels = [a.text() for a in prefix_menu.actions()]
+        labels = [a.text() for a in prefix_menu.actions() if a.text()]
         assert labels == [
             "Open folder",
             "Wine configuration",
             "Winetricks",
             "Wine file browser",
+            "Rebuild prefix…",
         ], labels
 
         for action in prefix_menu.actions():
-            action.trigger()
+            if action.text():
+                action.trigger()
         app.processEvents()
         assert [t for _, t in emitted] == [
             "open",
             "winecfg",
             "winetricks",
             "explorer",
+            "rebuild",
         ], emitted
         window.close()
 
@@ -2438,6 +2442,30 @@ def friends_tab_is_a_view_and_remembered() -> None:
         window._friends.grab()
         assert window._friends._requests_card.isVisibleTo(window._friends)
         window.close()
+
+
+# --------------------------------------------------------------------------
+# cases: feature tests live in tests/cases/test_*.py, one module per area.
+# They are loaded here so the suite still runs with a single command.
+
+
+def _load_cases() -> None:
+    import importlib
+
+    cases_dir = Path(__file__).resolve().parent / "cases"
+    if not cases_dir.is_dir():
+        return
+    parent = str(cases_dir.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    for module_file in sorted(cases_dir.glob("test_*.py")):
+        module = importlib.import_module(f"cases.{module_file.stem}")
+        register = getattr(module, "register", None)
+        if callable(register):
+            register(test=test, qt_app=qt_app, sandbox=sandbox, pump=pump)
+
+
+_load_cases()
 
 
 # --------------------------------------------------------------------------

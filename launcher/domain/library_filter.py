@@ -67,6 +67,10 @@ class LibraryFilter:
     prefix: PrefixKind = PrefixKind.ANY
     running: bool = False
     missing_art: bool = False
+    #: Only games carrying at least one of these tags (empty means any).
+    tags: tuple[str, ...] = ()
+    #: Hidden games are excluded unless this is on.
+    show_hidden: bool = False
 
     @property
     def active_count(self) -> int:
@@ -79,6 +83,8 @@ class LibraryFilter:
                 self.prefix is not PrefixKind.ANY,
                 self.running,
                 self.missing_art,
+                bool(self.tags),
+                self.show_hidden,
             )
         )
 
@@ -102,8 +108,12 @@ class LibraryFilter:
     ) -> bool:
         played = game.playtime_seconds > 0 or game.last_played is not None
         installed = game.executable_exists
+        folded = self.text.casefold()
+        game_tags = set(game.tags)
         checks = (
-            not self.text or self.text.casefold() in game.name.casefold(),
+            not self.text
+            or folded in game.name.casefold()
+            or any(folded in tag for tag in game_tags),
             not self.favorites or game.is_favorite,
             self.availability is not Availability.INSTALLED or installed,
             self.availability is not Availability.MISSING or not installed,
@@ -113,6 +123,8 @@ class LibraryFilter:
             self.prefix is not PrefixKind.OWN or bool(game.prefix),
             not self.running or game.name in running,
             not self.missing_art or has_art is None or not has_art(game.name),
+            not game.hidden or self.show_hidden,
+            not self.tags or bool(game_tags & set(self.tags)),
         )
         return all(checks)
 
@@ -127,6 +139,8 @@ class LibraryFilter:
             "prefix": self.prefix.value,
             "running": self.running,
             "missing_art": self.missing_art,
+            "tags": sorted(self.tags),
+            "show_hidden": self.show_hidden,
         }
 
     @classmethod
@@ -140,6 +154,10 @@ class LibraryFilter:
             except ValueError:
                 return default
 
+        stored_tags = raw.get("tags", [])
+        tags: tuple[str, ...] = ()
+        if isinstance(stored_tags, list):
+            tags = tuple(t for t in (str(t) for t in stored_tags) if t)
         return cls(
             favorites=bool(raw.get("favorites", False)),
             availability=pick(Availability, "availability", Availability.ANY),
@@ -147,4 +165,6 @@ class LibraryFilter:
             prefix=pick(PrefixKind, "prefix", PrefixKind.ANY),
             running=bool(raw.get("running", False)),
             missing_art=bool(raw.get("missing_art", False)),
+            tags=tags,
+            show_hidden=bool(raw.get("show_hidden", False)),
         )

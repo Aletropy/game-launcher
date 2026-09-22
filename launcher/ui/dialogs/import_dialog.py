@@ -73,6 +73,11 @@ class ImportGamesDialog(QDialog):
         self._scan_btn.setFixedWidth(80)
         self._scan_btn.clicked.connect(self._scan)
         row.addWidget(self._scan_btn)
+        self._steam_btn = QPushButton("Steam")
+        self._steam_btn.setFixedWidth(80)
+        self._steam_btn.setToolTip("Find installed Steam games")
+        self._steam_btn.clicked.connect(self._scan_steam)
+        row.addWidget(self._steam_btn)
         layout.addLayout(row)
 
         self._tree = QTreeWidget()
@@ -142,16 +147,81 @@ class ImportGamesDialog(QDialog):
 
     def _show_results(self, result: object) -> None:
         self._scan_btn.setEnabled(True)
-        candidates = result if isinstance(result, list) else []
-        self._candidates = candidates
-        if not candidates:
-            self._status.setText("No executables found in that folder.")
-            self._update_button()
+        self._steam_btn.setEnabled(True)
+        if isinstance(result, list) and result and hasattr(result[0], "best"):
+            self._show_steam(result)
             return
+        candidates = result if isinstance(result, list) else []
+        self._populate(candidates, origin="")
+        likely = sum(1 for c in candidates if c.likely_game)
+        message = f"Found {len(candidates)} executable(s); {likely} look like games."
+        skipped = self._skipped_count()
+        if skipped:
+            message += f" {skipped} already in your library."
+        self._status.setText(message)
+        self._update_button()
 
+    def _show_steam(self, games: object) -> None:
+        """Show Steam library results: one ticked row per found .exe."""
+        from launcher.services.steam_import import SteamGame, already_known
+
+        self._scan_btn.setEnabled(True)
+        self._steam_btn.setEnabled(True)
+        library = self._ctx.games.list_games()
+        known_names = {g.name for g in library}
+        known_exes = {g.executable for g in library if g.executable}
+        candidates: list[Candidate] = []
+        without_exe = 0
+        if isinstance(games, list):
+            for game in games:
+                if not isinstance(game, SteamGame):
+                    continue
+                if game.best is None:
+                    without_exe += 1
+                    continue
+                best = game.best
+                if already_known(game, known_names, known_exes):
+                    candidates.append(
+                        Candidate(
+                            name=game.name,
+                            executable=best.executable,
+                            size=best.size,
+                            likely_game=False,
+                            reason="already in your library",
+                        )
+                    )
+                else:
+                    candidates.append(
+                        Candidate(
+                            name=game.name,
+                            executable=best.executable,
+                            size=best.size,
+                            likely_game=best.likely_game,
+                            reason=best.reason or f"Steam app {game.app_id}",
+                        )
+                    )
+        self._populate(candidates, origin="Steam")
+        message = f"Found {len(candidates)} Steam game(s) with an executable."
+        if without_exe:
+            message += f" {without_exe} had no .exe found."
+        skipped = self._skipped_count()
+        if skipped:
+            message += f" {skipped} already in your library."
+        self._status.setText(message)
+        self._update_button()
+
+    def _skipped_count(self) -> int:
+        count = 0
+        for index in range(self._tree.topLevelItemCount()):
+            item = self._tree.topLevelItem(index)
+            if item is not None and "(already added)" in item.text(0):
+                count += 1
+        return count
+
+    def _populate(self, candidates: list[Candidate], *, origin: str) -> None:
+        self._candidates = candidates
         self._tree.blockSignals(True)
         existing = {g.name for g in self._ctx.games.list_games()}
-        skipped = 0
         for candidate in candidates:
             item = QTreeWidgetItem(
                 [candidate.name, str(candidate.executable), _human_size(candidate.size)]
@@ -162,21 +232,33 @@ class ImportGamesDialog(QDialog):
             item.setCheckState(
                 0, Qt.CheckState.Checked if tick else Qt.CheckState.Unchecked
             )
+            label = candidate.name
             if already:
-                item.setText(0, f"{candidate.name}  (already added)")
-                skipped += 1
-            elif candidate.reason:
+                label += "  (already added)"
+            else:
+                notes = []
+                if origin:
+                    notes.append(origin)
+                if candidate.reason:
+                    notes.append(candidate.reason)
+                if notes:
+                    label += f"  ({'; '.join(notes)})"
+            item.setText(0, label)
+            if candidate.reason:
                 item.setToolTip(0, candidate.reason)
-                item.setText(0, f"{candidate.name}  ({candidate.reason})")
             self._tree.addTopLevelItem(item)
         self._tree.blockSignals(False)
 
-        likely = sum(1 for c in candidates if c.likely_game)
-        message = f"Found {len(candidates)} executable(s); {likely} look like games."
-        if skipped:
-            message += f" {skipped} already in your library."
-        self._status.setText(message)
-        self._update_button()
+    def _scan_steam(self) -> None:
+        from launcher.services.steam_import import scan_steam_libraries
+
+        self._scan_btn.setEnabled(False)
+        self._steam_btn.setEnabled(False)
+        self._status.setText("Reading the Steam library…")
+        self._tree.clear()
+        # Results arrive in _show_results, which dispatches Steam games
+        # to _show_steam by shape.
+        self._tasks.submit(scan_steam_libraries)
 
     def _set_all(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked

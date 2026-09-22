@@ -146,6 +146,16 @@ class Paths:
     def state_db(self) -> Path:
         return self.data / "state.db"
 
+    @property
+    def active_sessions_file(self) -> Path:
+        """Games believed to be running, so a quit does not lose them."""
+        return self.data / "active-sessions.json"
+
+    @property
+    def pending_sessions_dir(self) -> Path:
+        """Finished sessions written by the background watcher."""
+        return self.data / "sessions-pending"
+
     def ensure_dirs(self) -> None:
         """Create the directories the launcher writes to."""
         for directory in (self.config, self.data, self.games_dir):

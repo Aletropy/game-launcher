@@ -32,7 +32,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     started   TEXT NOT NULL,
     seconds   INTEGER NOT NULL,
     -- 1 for history reconstructed from totals, whose date is approximate.
-    imported  INTEGER NOT NULL DEFAULT 0
+    imported  INTEGER NOT NULL DEFAULT 0,
+    -- Process exit code; 0 means the game exited cleanly.
+    exit_code INTEGER NOT NULL DEFAULT 0,
+    -- 1 when the exit looks like a crash rather than a quit.
+    crashed   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started);
 CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(name);
@@ -43,7 +47,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(name);
 _SCOPE = "(?1 IS NULL OR name IN (SELECT value FROM json_each(?1)))"
 
 #: Bumped when the schema changes; see _migrate.
-_USER_VERSION = 2
+_USER_VERSION = 4
 
 
 def _to_iso(when: datetime | None) -> str | None:
@@ -75,6 +79,10 @@ class StateStore:
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if version < 2:
             self._backfill_sessions()
+        if version < 3:
+            self._add_session_outcome_columns()
+        if version < 4:
+            self._add_library_columns()
         if version < _USER_VERSION:
             self._conn.execute(f"PRAGMA user_version = {_USER_VERSION}")
 
@@ -98,6 +106,38 @@ class StateStore:
             [(r["name"], r["last_played"], r["playtime_seconds"]) for r in rows],
         )
 
+    def _add_session_outcome_columns(self) -> None:
+        """Track how each session ended: exit code and crash flag."""
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(sessions)")
+        }
+        if "exit_code" not in columns:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN exit_code INTEGER NOT NULL DEFAULT 0"
+            )
+        if "crashed" not in columns:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN crashed INTEGER NOT NULL DEFAULT 0"
+            )
+
+    def _add_library_columns(self) -> None:
+        """Tags, notes and hidden flags for collections."""
+        columns = {
+            row["name"] for row in self._conn.execute("PRAGMA table_info(game_state)")
+        }
+        if "tags" not in columns:
+            self._conn.execute(
+                "ALTER TABLE game_state ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "notes" not in columns:
+            self._conn.execute(
+                "ALTER TABLE game_state ADD COLUMN notes TEXT NOT NULL DEFAULT ''"
+            )
+        if "hidden" not in columns:
+            self._conn.execute(
+                "ALTER TABLE game_state ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0"
+            )
+
     def close(self) -> None:
         self._conn.close()
 
@@ -116,12 +156,24 @@ class StateStore:
 
     @staticmethod
     def _row_to_stats(row: sqlite3.Row) -> GameStats:
+        columns = set(row.keys())
+        tags: tuple[str, ...] = ()
+        if "tags" in columns and row["tags"]:
+            try:
+                stored = json.loads(row["tags"])
+            except (json.JSONDecodeError, TypeError):
+                stored = []
+            if isinstance(stored, list):
+                tags = tuple(str(t) for t in stored if str(t))
         return GameStats(
             favorite=bool(row["favorite"]),
             playtime_seconds=int(row["playtime_seconds"]),
             last_played=_from_iso(row["last_played"]),
             added=_from_iso(row["added"]),
             launch_count=int(row["launch_count"]),
+            tags=tags,
+            notes=str(row["notes"]) if "notes" in columns and row["notes"] else "",
+            hidden=bool(row["hidden"]) if "hidden" in columns else False,
         )
 
     # -- writes --------------------------------------------------------
@@ -145,6 +197,40 @@ class StateStore:
         new_value = not self.get(name).favorite
         self.set_favorite(name, new_value)
         return new_value
+
+    def set_tags(self, name: str, tags: tuple[str, ...] | list[str]) -> None:
+        """Replace a game's tags."""
+        self._ensure_row(name)
+        self._conn.execute(
+            "UPDATE game_state SET tags = ? WHERE name = ?",
+            (json.dumps(sorted(set(tags))), name),
+        )
+        self._conn.commit()
+
+    def all_tags(self) -> list[str]:
+        """Every tag in use, sorted."""
+        tags: set[str] = set()
+        for stats in self.all_stats().values():
+            tags.update(stats.tags)
+        return sorted(tags)
+
+    def set_notes(self, name: str, notes: str) -> None:
+        """Replace a game's personal notes."""
+        self._ensure_row(name)
+        self._conn.execute(
+            "UPDATE game_state SET notes = ? WHERE name = ?",
+            (notes.strip(), name),
+        )
+        self._conn.commit()
+
+    def set_hidden(self, name: str, hidden: bool) -> None:
+        """Hide a game from the library, or show it again."""
+        self._ensure_row(name)
+        self._conn.execute(
+            "UPDATE game_state SET hidden = ? WHERE name = ?",
+            (1 if hidden else 0, name),
+        )
+        self._conn.commit()
 
     def record_launch(self, name: str, when: datetime | None = None) -> None:
         """Note that a game was started."""
@@ -194,38 +280,128 @@ class StateStore:
 
     # -- sessions --------------------------------------------------------
 
-    def record_session(self, name: str, started: datetime, seconds: int) -> None:
-        """Note one finished play session."""
+    def record_session(
+        self,
+        name: str,
+        started: datetime,
+        seconds: int,
+        *,
+        exit_code: int = 0,
+        crashed: bool = False,
+    ) -> int:
+        """Note one finished play session. Returns its row id."""
         if seconds <= 0:
-            return
-        self._conn.execute(
-            "INSERT INTO sessions (name, started, seconds) VALUES (?, ?, ?)",
-            (name, _to_iso(started), int(seconds)),
+            return 0
+        cursor = self._conn.execute(
+            "INSERT INTO sessions (name, started, seconds, exit_code, crashed)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                name,
+                _to_iso(started),
+                int(seconds),
+                int(exit_code),
+                1 if crashed else 0,
+            ),
         )
         self._conn.commit()
+        return int(cursor.lastrowid or 0)
+
+    @staticmethod
+    def _session_from_row(row: sqlite3.Row) -> Session | None:
+        started = _from_iso(row["started"])
+        if started is None:
+            return None
+        columns = set(row.keys())
+        return Session(
+            name=row["name"],
+            started=started,
+            seconds=int(row["seconds"]),
+            imported=bool(row["imported"]),
+            exit_code=int(row["exit_code"]) if "exit_code" in columns else 0,
+            crashed=bool(row["crashed"]) if "crashed" in columns else False,
+        )
 
     def sessions(self, since: datetime | None = None) -> list[Session]:
         """Play sessions, oldest first, optionally from a date on."""
-        query = "SELECT name, started, seconds, imported FROM sessions"
+        query = "SELECT name, started, seconds, imported, exit_code, crashed FROM sessions"
         params: tuple = ()
         if since is not None:
             query += " WHERE started >= ?"
             params = (_to_iso(since),)
         rows = self._conn.execute(query + " ORDER BY started", params).fetchall()
-        sessions: list[Session] = []
+        found: list[Session] = []
         for row in rows:
-            started = _from_iso(row["started"])
-            if started is None:
-                continue
-            sessions.append(
-                Session(
-                    name=row["name"],
-                    started=started,
-                    seconds=int(row["seconds"]),
-                    imported=bool(row["imported"]),
-                )
+            session = self._session_from_row(row)
+            if session is not None:
+                found.append(session)
+        return found
+
+    def sessions_with_ids(
+        self, name: str | None = None
+    ) -> list[tuple[int, Session]]:
+        """Sessions with their row ids, oldest first, optionally one game."""
+        if name is None:
+            rows = self._conn.execute(
+                "SELECT id, name, started, seconds, imported, exit_code, crashed"
+                " FROM sessions ORDER BY started"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT id, name, started, seconds, imported, exit_code, crashed"
+                " FROM sessions WHERE name = ? ORDER BY started",
+                (name,),
+            ).fetchall()
+        found: list[tuple[int, Session]] = []
+        for row in rows:
+            session = self._session_from_row(row)
+            if session is not None:
+                found.append((int(row["id"]), session))
+        return found
+
+    def delete_session(self, session_id: int) -> tuple[str, int] | None:
+        """Delete one session, subtracting it from the game's total.
+
+        Returns the (game, seconds) removed, or None when unknown.
+        """
+        row = self._conn.execute(
+            "SELECT name, seconds FROM sessions WHERE id = ?", (int(session_id),)
+        ).fetchone()
+        if row is None:
+            return None
+        self._conn.execute("DELETE FROM sessions WHERE id = ?", (int(session_id),))
+        self._conn.execute(
+            "UPDATE game_state SET playtime_seconds = MAX(0, playtime_seconds - ?)"
+            " WHERE name = ?",
+            (int(row["seconds"]), row["name"]),
+        )
+        self._conn.commit()
+        return (row["name"], int(row["seconds"]))
+
+    def update_session(
+        self, session_id: int, started: datetime, seconds: int
+    ) -> bool:
+        """Correct a session's date and length, keeping totals consistent."""
+        if seconds <= 0:
+            return False
+        row = self._conn.execute(
+            "SELECT name, seconds FROM sessions WHERE id = ?", (int(session_id),)
+        ).fetchone()
+        if row is None:
+            return False
+        delta = int(seconds) - int(row["seconds"])
+        self._conn.execute(
+            "UPDATE sessions SET started = ?, seconds = ? WHERE id = ?",
+            (_to_iso(started), int(seconds), int(session_id)),
+        )
+        if delta:
+            self._conn.execute(
+                "UPDATE game_state"
+                " SET playtime_seconds = MAX(0, playtime_seconds + ?)"
+                " WHERE name = ?",
+                (delta, row["name"]),
             )
-        return sessions
+        self._conn.commit()
+        return True
 
     def sessions_after(self, last_id: int, limit: int) -> list[tuple[int, Session]]:
         """Sessions recorded after a row id, oldest first, with their ids.
@@ -233,21 +409,15 @@ class StateStore:
         For uploading history in order: the largest id sent is the cursor.
         """
         rows = self._conn.execute(
-            "SELECT id, name, started, seconds, imported FROM sessions"
-            " WHERE id > ? ORDER BY id LIMIT ?",
+            "SELECT id, name, started, seconds, imported, exit_code, crashed"
+            " FROM sessions WHERE id > ? ORDER BY id LIMIT ?",
             (int(last_id), int(limit)),
         ).fetchall()
         found: list[tuple[int, Session]] = []
         for row in rows:
-            started = _from_iso(row["started"])
-            if started is None:
-                continue
-            found.append(
-                (
-                    int(row["id"]),
-                    Session(row["name"], started, int(row["seconds"]), bool(row["imported"])),
-                )
-            )
+            session = self._session_from_row(row)
+            if session is not None:
+                found.append((int(row["id"]), session))
         return found
 
     def last_session_id(self) -> int:
@@ -315,6 +485,12 @@ class StateStore:
 
     def clear_favorites(self, names: Collection[str] | None = None) -> None:
         self._write("UPDATE game_state SET favorite = 0", names)
+
+    def clear_collections(self, names: Collection[str] | None = None) -> None:
+        """Forget tags, notes and hidden flags."""
+        self._write(
+            "UPDATE game_state SET tags = '[]', notes = '', hidden = 0", names
+        )
 
     def forget(self, names: Collection[str]) -> None:
         """Remove every trace of some games, e.g. ones no longer installed."""

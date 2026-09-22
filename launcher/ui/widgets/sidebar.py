@@ -120,6 +120,10 @@ class LibrarySidebar(QWidget):
         self._games: list[Game] = []
         self._running: set[str] = set()
         self._filter = LibraryFilter()
+        #: Tags seen in the listed games, for the filter menu.
+        self._known_tags: list[str] = []
+        #: List rows or a cover grid.
+        self._covers = False
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -167,6 +171,14 @@ class LibrarySidebar(QWidget):
         self._fav_first.setToolTip("Keep favourites at the top")
         self._fav_first.toggled.connect(self.favorites_first_changed)
         sort_row.addWidget(self._fav_first)
+
+        self._covers_btn = QToolButton()
+        self._covers_btn.setObjectName("coversButton")
+        self._covers_btn.setText("Covers")
+        self._covers_btn.setCheckable(True)
+        self._covers_btn.setToolTip("Show covers instead of rows")
+        self._covers_btn.toggled.connect(self.set_covers)
+        sort_row.addWidget(self._covers_btn)
         layout.addLayout(sort_row)
 
         self._list = QListWidget()
@@ -287,6 +299,17 @@ class LibrarySidebar(QWidget):
         toggle("\u2605  Favourites", "favorites")
         toggle("\u25cf  Running now", "running")
         toggle("Missing a cover", "missing_art")
+        toggle("Show hidden games", "show_hidden")
+        if self._known_tags:
+            menu.addSection("Tags")
+            for tag in self._known_tags:
+                action = QAction(tag, menu)
+                action.setCheckable(True)
+                action.setChecked(tag in current.tags)
+                action.toggled.connect(
+                    lambda on, t=tag: self._emit_filter(self._with_tag(t, on))
+                )
+                menu.addAction(action)
         choice("Installed", "availability", Availability)
         choice("History", "played", PlayState)
         choice("Wine prefix", "prefix", PrefixKind)
@@ -294,6 +317,13 @@ class LibrarySidebar(QWidget):
         clear = menu.addAction("Clear filters")
         clear.setEnabled(current.active_count > 0)
         clear.triggered.connect(lambda: self._emit_filter(self._filter.cleared()))
+
+    def _with_tag(self, tag: str, on: bool) -> LibraryFilter:
+        """The filter with one tag added or removed."""
+        tags = [t for t in self._filter.tags if t != tag]
+        if on:
+            tags.append(tag)
+        return self._filter.with_(tags=tuple(sorted(tags)))
 
     # -- state ---------------------------------------------------------
 
@@ -309,21 +339,60 @@ class LibrarySidebar(QWidget):
         self._search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self._search.selectAll()
 
+    def set_known_tags(self, tags: list[str]) -> None:
+        """Tags offered in the filter menu. Fed from the whole library."""
+        self._known_tags = list(tags)
+
+    @property
+    def covers(self) -> bool:
+        """Whether the list shows covers instead of rows."""
+        return self._covers
+
+    def set_covers(self, enabled: bool) -> None:
+        """Switch between rows and a cover grid, keeping the selection."""
+        if enabled == self._covers:
+            return
+        self._covers = enabled
+        if self._covers_btn.isChecked() != enabled:
+            self._covers_btn.setChecked(enabled)
+        self.set_games(self._games, select=self.selected_game())
+
     def set_games(self, games: list[Game], *, select: str | None = None) -> None:
         """Repopulate the list, keeping the selection where possible."""
         previous = select if select is not None else self.selected_game()
         self._games = games
         # Density and theme can change between calls.
         self._list.setIconSize(_icon_size())
+        if self._covers:
+            self._list.setViewMode(self._list.ViewMode.IconMode)
+            self._list.setResizeMode(self._list.ResizeMode.Adjust)
+            self._list.setMovement(self._list.Movement.Static)
+            self._list.setSpacing(8)
+            self._list.setIconSize(QSize(120, 180))
+            self._list.setUniformItemSizes(False)
+        else:
+            self._list.setViewMode(self._list.ViewMode.ListMode)
+            self._list.setSpacing(0)
+            self._list.setIconSize(_icon_size())
+            self._list.setUniformItemSizes(False)
 
         self._list.blockSignals(True)
         self._list.clear()
         for game in games:
             item = QListWidgetItem(game.name)
             item.setData(Qt.ItemDataRole.UserRole, game.name)
-            item.setSizeHint(QSize(0, metrics().row_height))
-            item.setIcon(QIcon(self._row_icon(game.name)))
+            if self._covers:
+                item.setIcon(QIcon(self._cover_icon(game.name)))
+                item.setSizeHint(QSize(132, 216))
+                item.setText(game.name)
+            else:
+                item.setSizeHint(QSize(0, metrics().row_height))
+                item.setIcon(QIcon(self._row_icon(game.name)))
             self._decorate(item, game)
+            if self._covers:
+                # The grid shows covers; rows carry the details.
+                marks = "  \u2605" if game.is_favorite else ""
+                item.setText(f"{game.name}{marks}")
             self._list.addItem(item)
         self._list.blockSignals(False)
 
@@ -333,6 +402,15 @@ class LibrarySidebar(QWidget):
             self._list.setCurrentRow(0)
         else:
             self.selection_changed.emit("")
+
+    def _cover_icon(self, name: str) -> QPixmap:
+        """A portrait cover for the grid, falling back to the row icon."""
+        size = QSize(120, 180)
+        dpr = self.devicePixelRatioF()
+        return (
+            self._artwork.pixmap(name, GRID.name, size, expand=True, dpr=dpr)
+            or self._row_icon(name)
+        )
 
     def _row_icon(self, name: str) -> QPixmap:
         """The game's icon, a square crop of its cover, or its initial."""

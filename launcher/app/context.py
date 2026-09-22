@@ -7,9 +7,11 @@ what lets a test point the whole application at a temporary directory.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from launcher.app.startup import StartupProfiler
 from launcher.data.game_repository import GameRepository
 from launcher.data.paths import Paths
 from launcher.data.settings_store import SettingsStore
@@ -17,6 +19,7 @@ from launcher.data.state_store import StateStore
 from launcher.services.artwork import ArtworkCleaner, ArtworkService
 from launcher.services.backups import BackupService
 from launcher.services.friends import FriendsService
+from launcher.services.game_log import GameLogStore
 from launcher.services.prefix_tools import PrefixToolsService
 from launcher.services.process import ProcessService
 from launcher.services.save_store import SaveStore
@@ -34,6 +37,7 @@ class AppContext:
     artwork: ArtworkService
     cleaner: ArtworkCleaner
     processes: ProcessService
+    logs: GameLogStore
     save_store: SaveStore
     backups: BackupService
     prefix_tools: PrefixToolsService
@@ -41,23 +45,45 @@ class AppContext:
     friends: FriendsService
 
     @classmethod
-    def create(cls, paths: Paths | None = None) -> AppContext:
+    def create(
+        cls, paths: Paths | None = None, profiler: StartupProfiler | None = None
+    ) -> AppContext:
         """Build the object graph."""
+        profiler = profiler or StartupProfiler()
         paths = paths or Paths.default()
-        paths.ensure_dirs()
+        with profiler.stage("ensure-dirs"):
+            paths.ensure_dirs()
 
-        settings = SettingsStore(paths.settings_file)
-        state = StateStore(paths.state_db)
-        # Favourites used to live in their own JSON file; move them across
-        # once so an upgrade does not lose them.
-        state.import_legacy_favorites(paths.legacy_favorites_file)
+        with profiler.stage("settings+state"):
+            settings = SettingsStore(paths.settings_file)
+            state = StateStore(paths.state_db)
+            # Favourites used to live in their own JSON file; move them across
+            # once so an upgrade does not lose them.
+            state.import_legacy_favorites(paths.legacy_favorites_file)
 
-        artwork = ArtworkService(paths)
-        # Earlier versions saved covers into the banner folder; move them
-        # to where they belong before anything draws them.
-        artwork.reclassify_misfiled()
-        games = GameRepository(paths, state)
-        processes = ProcessService(paths)
+        with profiler.stage("artwork"):
+            artwork = ArtworkService(paths)
+            # Earlier versions saved covers into the banner folder; move them
+            # to where they belong before anything draws them.
+            artwork.reclassify_misfiled()
+        with profiler.stage("games"):
+            games = GameRepository(paths, state)
+        with profiler.stage("processes"):
+            processes = ProcessService(paths)
+            logs = GameLogStore(paths, processes)
+        # Finished sessions left by the background watcher (the app quit
+        # while games ran) count now; stale launches that already exited
+        # are finalized first so nothing stays "running" forever.
+        with profiler.stage("sessions-recovery"):
+            try:
+                from launcher.services import sessions as _sessions
+                from launcher.services.process import MIN_SESSION_SECONDS
+
+                _sessions.recover_active(paths, MIN_SESSION_SECONDS)
+                _sessions.import_pending(state, paths)
+                _ensure_watchers(paths)
+            except (OSError, ValueError):
+                pass
         return cls(
             paths=paths,
             settings=settings,
@@ -66,6 +92,7 @@ class AppContext:
             artwork=artwork,
             cleaner=ArtworkCleaner(artwork),
             processes=processes,
+            logs=logs,
             save_store=SaveStore(paths),
             backups=BackupService(paths),
             prefix_tools=PrefixToolsService(paths),
@@ -82,10 +109,40 @@ class AppContext:
     def close(self) -> None:
         """Release resources. Safe to call more than once.
 
-        Wine tools are started detached and deliberately left running:
-        closing the launcher should not interrupt a winetricks session
-        part way through changing a prefix.
+        Running games are deliberately left alive: each has a detached
+        watcher that records its full playtime when it exits. Wine tools
+        are started detached and deliberately left running for the same
+        reason.
         """
         self.friends.stop()
-        self.processes.stop_all()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self.processes.detach_all()
+        try:
+            from launcher.services import sessions as _sessions
+
+            _sessions.import_pending(self.state, self.paths)
+        except (OSError, ValueError):
+            pass
         self.state.close()
+
+
+def _ensure_watchers(paths: Paths) -> None:
+    """Cover live games from a previous run that lost their watcher."""
+    from launcher.services import sessions as _sessions
+    from launcher.services.session_watcher import spawn_watcher
+
+    for name, entry in _sessions.load_active(paths).items():
+        started_iso = entry.get("started_iso")
+        pid = entry.get("pid")
+        watcher_pid = entry.get("watcher_pid")
+        if (
+            not isinstance(started_iso, str)
+            or not isinstance(pid, int)
+            or not _sessions.pid_alive(pid)
+        ):
+            continue
+        if _sessions.pid_alive(watcher_pid):
+            continue
+        watcher = spawn_watcher(paths, name, started_iso, pid)
+        if watcher:
+            _sessions.update_active(paths, name, watcher_pid=watcher)

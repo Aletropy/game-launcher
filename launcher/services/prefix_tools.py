@@ -304,6 +304,33 @@ class PrefixToolsService(QObject):
         # every tool runs as a verb: `wine winecfg`, `wine explorer`.
         return str(wine), [tool.verb]
 
+    def rebuild(self, raw_prefix: str) -> Path:
+        """Delete a prefix so Proton builds it fresh on next launch.
+
+        Saves live in the shared store, not the prefix, so game data
+        survives. Raises OSError with a plain message when the path is
+        unsafe or missing.
+        """
+        path = self.resolve(raw_prefix)
+        try:
+            resolved = path.resolve()
+        except OSError as e:
+            raise OSError(f"Cannot rebuild this prefix:\n{e}") from e
+        base = self._paths.base.resolve()
+        home = Path.home().resolve()
+        inside = any(
+            resolved == root or root in resolved.parents for root in (base, home)
+        )
+        if not inside or resolved in (base, home):
+            raise OSError(
+                "Refusing to delete a prefix outside the launcher and home "
+                f"folders:\n{path}"
+            )
+        if not path.is_dir():
+            raise OSError(f"The prefix does not exist yet:\n{path}")
+        shutil.rmtree(path, ignore_errors=False)
+        return path
+
 
 def open_path(path: Path) -> bool:
     """Open any directory in the file manager."""
