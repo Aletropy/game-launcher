@@ -775,6 +775,15 @@ class MainWindow(QMainWindow):
         current = updates.current_version()
         self._update_tasks.submit(lambda: updates.check_github(repo, current))
 
+    def announce_recovered_sessions(self) -> None:
+        """Note games still playing from before the restart, once."""
+        names = self._ctx.processes.take_reattached()
+        if not names:
+            return
+        self.statusBar().showMessage(
+            f"Still playing: {', '.join(names)} \u2014 timer recovered.", 10000
+        )
+
     def _show_update_badge(self, info: UpdateInfo) -> None:
         self._pending_update = info
         self._update_btn.setText(f"\u2193 {info.version}")

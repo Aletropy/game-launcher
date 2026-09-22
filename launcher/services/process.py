@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
+import os
+import signal
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QTimer, Signal
 
 from launcher.data.paths import Paths
 
@@ -37,11 +40,17 @@ class ProcessService(QObject):
     game_error = Signal(str, str)
     #: name, seconds played — only for sessions long enough to count.
     session_recorded = Signal(str, int)
+    #: A recovered game is gone; its watcher owns the recording.
+    reattached_finished = Signal(str)
 
     def __init__(self, paths: Paths, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._paths = paths
         self._sessions: dict[str, _Session] = {}
+        #: Recovered games not yet announced, for the startup status line.
+        self._reattached: set[str] = set()
+        #: Watches recovered games, which have no QProcess of their own.
+        self._poll_timer: QTimer | None = None
         #: Exit code of the most recently finished launch, per game.
         #: Read synchronously by the session recorder while handling
         #: session_recorded, which is always emitted before game_finished.
@@ -70,6 +79,105 @@ class ProcessService(QObject):
         if session is None:
             return 0
         return max(0, int(time.monotonic() - session.started_at))
+
+    @property
+    def reattached_games(self) -> list[str]:
+        """Recovered games not yet announced by the window."""
+        return sorted(self._reattached)
+
+    def take_reattached(self) -> list[str]:
+        """The recovered games, cleared so they are announced once."""
+        names = sorted(self._reattached)
+        self._reattached.clear()
+        return names
+
+    def reattach_live(self) -> list[str]:
+        """Mirror games still running from a previous run.
+
+        Reads the persisted active sessions and tracks the live ones in
+        memory — without a QProcess, since another process started them —
+        so the library shows them as playing with their real elapsed
+        time. Silent on purpose: no launch is recorded and no started
+        signal fires; the window renders the running state it finds and
+        the detached watcher keeps owning the recording.
+        """
+        try:
+            from launcher.services import sessions as _sessions
+        except ImportError:
+            return []
+        try:
+            active = _sessions.load_active(self._paths)
+        except (OSError, ValueError):
+            return []
+        now_wall = datetime.now()
+        recovered: list[str] = []
+        for name, entry in active.items():
+            if name in self._sessions:
+                continue
+            pid = entry.get("pid")
+            if not _sessions.pid_alive(pid):
+                continue
+            try:
+                started_wall = datetime.fromisoformat(entry.get("started_iso") or "")
+            except (TypeError, ValueError):
+                continue
+            lag = (now_wall - started_wall).total_seconds()
+            watcher_pid = entry.get("watcher_pid")
+            self._sessions[name] = _Session(
+                None,
+                time.monotonic() - max(0.0, lag),
+                started_wall,
+                pid if isinstance(pid, int) else None,
+                watcher_pid if isinstance(watcher_pid, int) else None,
+            )
+            self._reattached.add(name)
+            recovered.append(name)
+        if recovered:
+            self._ensure_poll_timer()
+        return recovered
+
+    def _ensure_poll_timer(self) -> None:
+        if self._poll_timer is None:
+            self._poll_timer = QTimer(self)
+            self._poll_timer.setInterval(5000)
+            self._poll_timer.timeout.connect(self._poll_reattached)
+        if not self._poll_timer.isActive():
+            self._poll_timer.start()
+
+    def _poll_reattached(self) -> None:
+        """Notice recovered games that exited since the last poll."""
+        try:
+            from launcher.services import sessions as _sessions
+        except ImportError:
+            return
+        for name in list(self._sessions):
+            session = self._sessions.get(name)
+            if session is None or session.process is not None:
+                continue
+            if _sessions.pid_alive(session.pid):
+                continue
+            self._finish_reattached(name)
+        if self._poll_timer is not None and not any(
+            s.process is None for s in self._sessions.values()
+        ):
+            self._poll_timer.stop()
+
+    def _finish_reattached(self, name: str) -> None:
+        """Drop a recovered game that is gone.
+
+        Recording is left to the detached watcher, which writes the full
+        session as a sidecar; the recorder imports it. The exit code is
+        unknown, so 0 keeps a normal exit from looking like a crash.
+        """
+        session = self._sessions.pop(name, None)
+        elapsed = (
+            int(time.monotonic() - session.started_at) if session is not None else 0
+        )
+        self._reattached.discard(name)
+        self._last_exit[name] = 0
+        self._last_seconds[name] = elapsed
+        self.game_finished.emit(name, 0)
+        self.reattached_finished.emit(name)
 
     def launch(self, game_name: str) -> bool:
         """Launch a game by name. Returns True if it started."""
@@ -144,7 +252,12 @@ class ProcessService(QObject):
         if session is None:
             return False
         if session.process is None:
-            self._on_finished(game_name, -1)
+            # Recovered from a previous run: signal the real process and
+            # let the watcher record the session when it exits.
+            if session.pid:
+                with contextlib.suppress(OSError):
+                    os.kill(session.pid, signal.SIGTERM)
+            self._finish_reattached(game_name)
             return True
         session.process.terminate()
         return True

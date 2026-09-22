@@ -8,11 +8,11 @@ Steam Flatpak container.
 One file, run once:
 
 ```bash
-./milso-launcher-2.3.0.run             # install, or upgrade in place
-./milso-launcher-2.3.0.run --target DIR
-./milso-launcher-2.3.0.run --yes       # no questions
-./milso-launcher-2.3.0.run --check     # dependencies only, changes nothing
-./milso-launcher-2.3.0.run --extract DIR
+./milso-launcher-2.3.1.run             # install, or upgrade in place
+./milso-launcher-2.3.1.run --target DIR
+./milso-launcher-2.3.1.run --yes       # no questions
+./milso-launcher-2.3.1.run --check     # dependencies only, changes nothing
+./milso-launcher-2.3.1.run --extract DIR
 ```
 
 It verifies its own payload, unpacks itself, finds an existing
@@ -104,8 +104,8 @@ byte-identical.
 To install elsewhere:
 
 ```bash
-tar xzf milso-launcher-2.3.0.tar.gz
-cd milso-launcher-2.3.0
+tar xzf milso-launcher-2.3.1.tar.gz
+cd milso-launcher-2.3.1
 ./install.sh
 ```
 
@@ -219,7 +219,8 @@ Library changes it later. In the tray, left-click shows the window and
 the menu shows running games with live timers, per-game Stop and Quit.
 Playtime keeps counting with the window closed. Quitting never kills a
 game: a detached watcher records its full session when it exits, even if
-the launcher is gone by then.
+the launcher is gone by then. Reopening while a game is still running
+shows it as playing again, with its timer picked up where it left off.
 
 Only one copy runs per user. Starting it again (or
 `milso-launcher --play "Name"`, which desktop shortcuts use) forwards to

@@ -84,6 +84,12 @@ class AppContext:
                 _ensure_watchers(paths)
             except (OSError, ValueError):
                 pass
+        # Games still running from a previous run show as playing again,
+        # with their real elapsed time; the watcher records their tail.
+        with profiler.stage("sessions-reattach"), contextlib.suppress(
+            OSError, ValueError, RuntimeError
+        ):
+            processes.reattach_live()
         return cls(
             paths=paths,
             settings=settings,

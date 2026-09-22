@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from launcher.app.context import AppContext
 from launcher.domain.crash_signatures import CrashAssessment, assess
@@ -51,6 +51,7 @@ class SessionRecorder(QObject):
         processes.session_recorded.connect(self._on_session_recorded)
         processes.game_started.connect(self._on_game_started)
         processes.game_finished.connect(self._on_game_finished)
+        processes.reattached_finished.connect(self._on_reattached_finished)
 
     # -- process signals -----------------------------------------------
 
@@ -74,6 +75,25 @@ class SessionRecorder(QObject):
             summary = assessment.summary or f"exited with code {exit_code}"
             self.status.emit(f"{name} failed to start ({summary}).")
             self.launch_failed.emit(name)
+
+    def _on_reattached_finished(self, name: str) -> None:
+        # A recovered game just exited. Its watcher writes the full
+        # session as a sidecar within seconds; import it now and retry
+        # twice so the playtime lands without needing another restart.
+        self._import_reattached(name, attempts=3)
+
+    def _import_reattached(self, name: str, attempts: int) -> None:
+        from launcher.services import sessions as _sessions
+
+        imported = _sessions.import_pending(self._ctx.state, self._ctx.paths)
+        seconds = sum(s for n, s in imported if n == name)
+        if seconds > 0:
+            self._counted.add(name)
+            self._refresh_game(name)
+            minutes = max(1, seconds // 60)
+            self.status.emit(f"Recorded {minutes} min of playtime for {name}.")
+        elif attempts > 1:
+            QTimer.singleShot(6000, lambda: self._import_reattached(name, attempts - 1))
 
     def _on_session_recorded(self, name: str, seconds: int) -> None:
         self._counted.add(name)

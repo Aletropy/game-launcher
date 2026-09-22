@@ -103,6 +103,7 @@ def main() -> None:
     QTimer.singleShot(0, window.offer_artwork_cleanup)
     QTimer.singleShot(0, window.share_saves_everywhere)
     QTimer.singleShot(0, window.check_for_updates_on_startup)
+    QTimer.singleShot(0, window.announce_recovered_sessions)
     # Does nothing in Offline Mode, the default.
     QTimer.singleShot(0, context.friends.start)
 
