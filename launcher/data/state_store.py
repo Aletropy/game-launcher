@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Collection
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +37,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started);
 CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(name);
 """
+
+#: Restricts a statement to some games. The one parameter is a JSON list
+#: of names, or NULL for every game, so the SQL itself never varies.
+_SCOPE = "(?1 IS NULL OR name IN (SELECT value FROM json_each(?1)))"
 
 #: Bumped when the schema changes; see _migrate.
 _USER_VERSION = 2
@@ -232,6 +237,84 @@ class StateStore:
             )
             self._conn.commit()
         return len(stale)
+
+    # -- clearing --------------------------------------------------------
+
+    @staticmethod
+    def _scope(names: Collection[str] | None) -> tuple[str | None]:
+        """The parameter for _SCOPE: some games as JSON, or None for all."""
+        return (None if names is None else json.dumps(sorted(names)),)
+
+    def session_count(self, names: Collection[str] | None = None) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM sessions"
+            " WHERE (?1 IS NULL OR name IN (SELECT value FROM json_each(?1)))",
+            self._scope(names),
+        ).fetchone()
+        return int(row[0])
+
+    def total_playtime(self, names: Collection[str] | None = None) -> int:
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(playtime_seconds), 0) FROM game_state"
+            " WHERE (?1 IS NULL OR name IN (SELECT value FROM json_each(?1)))",
+            self._scope(names),
+        ).fetchone()
+        return int(row[0])
+
+    def known_names(self) -> set[str]:
+        """Every game with any stored state or history."""
+        rows = self._conn.execute(
+            "SELECT name FROM game_state UNION SELECT name FROM sessions"
+        ).fetchall()
+        return {row[0] for row in rows}
+
+    def _write(self, sql: str, names: Collection[str] | None) -> int:
+        cursor = self._conn.execute(sql + " WHERE " + _SCOPE, self._scope(names))
+        self._conn.commit()
+        return cursor.rowcount
+
+    def clear_sessions(self, names: Collection[str] | None = None) -> int:
+        """Forget play history. Returns sessions removed."""
+        return self._write("DELETE FROM sessions", names)
+
+    def reset_playtime(self, names: Collection[str] | None = None) -> None:
+        self._write("UPDATE game_state SET playtime_seconds = 0", names)
+
+    def reset_launches(self, names: Collection[str] | None = None) -> None:
+        """Forget when games were last played and how often."""
+        self._write(
+            "UPDATE game_state SET last_played = NULL, launch_count = 0", names
+        )
+
+    def clear_favorites(self, names: Collection[str] | None = None) -> None:
+        self._write("UPDATE game_state SET favorite = 0", names)
+
+    def forget(self, names: Collection[str]) -> None:
+        """Remove every trace of some games, e.g. ones no longer installed."""
+        self._write("DELETE FROM game_state", names)
+        self._write("DELETE FROM sessions", names)
+
+    def snapshot(self, directory: Path, keep: int = 5) -> Path:
+        """Copy the database aside before a destructive change.
+
+        Uses SQLite's backup API, so the copy is consistent even though
+        the database is open. Only the newest `keep` copies are kept.
+        """
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        target = directory / f"state-{stamp}.db"
+        suffix = 1
+        while target.exists():
+            suffix += 1
+            target = directory / f"state-{stamp}-{suffix}.db"
+        copy = sqlite3.connect(str(target))
+        try:
+            self._conn.backup(copy)
+        finally:
+            copy.close()
+        for old in sorted(directory.glob("state-*.db"))[:-keep]:
+            old.unlink(missing_ok=True)
+        return target
 
     # -- migration -----------------------------------------------------
 

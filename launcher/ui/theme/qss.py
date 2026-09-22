@@ -150,6 +150,22 @@ QPushButton#playButton:disabled {
     color: $fg_disabled;
 }
 
+QPushButton#dangerButton {
+    color: $danger;
+    border-color: $danger;
+}
+
+QPushButton#dangerButton:hover {
+    color: $on_accent;
+    background-color: $danger;
+}
+
+QPushButton#dangerButton:disabled {
+    color: $fg_disabled;
+    border-color: $border;
+    background-color: $raised;
+}
+
 QPushButton#favButton {
     background: transparent;
     border: none;

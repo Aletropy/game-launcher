@@ -104,6 +104,11 @@ class Paths:
         return self.config / "favorites.json"
 
     @property
+    def state_backups_dir(self) -> Path:
+        """Copies of the database taken before clearing data."""
+        return self.data / "state-backups"
+
+    @property
     def state_db(self) -> Path:
         return self.data / "state.db"
 

@@ -51,6 +51,7 @@ class GameDetailPanel(QWidget):
     backup_requested = Signal(str)
     #: Open the backups, pointed at this game's folders.
     backups_requested = Signal(str)
+    clear_data_requested = Signal(str)
     #: game name, dropped image path
     artwork_dropped = Signal(str, str)
 
@@ -190,7 +191,7 @@ class GameDetailPanel(QWidget):
         # empty submenu and none of its actions can be reached.
         self._more_menu = QMenu(self)
         self._more_menu.addAction(
-            "Fetch artwork\u2026", lambda: self._emit_named(self.artwork_requested)
+            "Artwork\u2026", lambda: self._emit_named(self.artwork_requested)
         )
         self._more_menu.addSeparator()
 
@@ -215,6 +216,10 @@ class GameDetailPanel(QWidget):
             "Backups\u2026", lambda: self._emit_named(self.backups_requested)
         )
         self._more_menu.addMenu(self._saves_menu)
+        self._more_menu.addSeparator()
+        self._more_menu.addAction(
+            "Clear data\u2026", lambda: self._emit_named(self.clear_data_requested)
+        )
         return self._more_menu
 
     # -- population ----------------------------------------------------

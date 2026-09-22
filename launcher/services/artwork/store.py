@@ -104,6 +104,15 @@ class ArtworkService:
         self.invalidate(key)
         return dest
 
+    def files_for(self, key: str) -> list[Path]:
+        """Every stored artwork file for a game, of any type."""
+        found = []
+        for art in SPECS:
+            path = self.path_for(key, art)
+            if path is not None:
+                found.append(path)
+        return found
+
     def remove(self, key: str, art: str | None = None) -> int:
         """Delete stored artwork. Returns the number of files removed.
 

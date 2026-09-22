@@ -25,10 +25,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from launcher.app.data_cleaner import DataKind
 from launcher.app.library_controller import LibraryController
 from launcher.domain.models import Game, SortOrder
 from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
 from launcher.ui.dialogs.backups_dialog import BackupsDialog
+from launcher.ui.dialogs.clear_data_dialog import ClearDataDialog
 from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask, warn
 from launcher.ui.dialogs.game_dialog import AddGameDialog
 from launcher.ui.dialogs.import_dialog import ImportGamesDialog
@@ -180,6 +182,7 @@ class MainWindow(QMainWindow):
         detail.backup_requested.connect(self._backup_saves)
         detail.backups_requested.connect(self._open_backups)
         detail.artwork_dropped.connect(self._artwork_dropped)
+        detail.clear_data_requested.connect(self._clear_data)
 
         journal = self._journal
         journal.play_requested.connect(self._launch_game)
@@ -475,7 +478,35 @@ class MainWindow(QMainWindow):
         self._lib.reload()
 
     def _open_settings(self) -> None:
-        SettingsDialog(self._ctx, parent=self).exec()
+        dialog = SettingsDialog(self._ctx, parent=self)
+        dialog.clear_data_requested.connect(lambda: self._clear_data("", dialog))
+        dialog.exec()
+
+    def _clear_data(self, name: str = "", parent: QWidget | None = None) -> None:
+        dialog = ClearDataDialog(self._ctx, name or None, parent or self)
+        if not dialog.exec() or dialog.report is None:
+            return
+        report = dialog.report
+        if DataKind.LOGS in dialog.cleared:
+            for game in dialog.cleared_names:
+                if game in self._logs:
+                    self._clear_log(game)
+        if DataKind.ARTWORK in dialog.cleared:
+            self._ctx.artwork.invalidate()
+        self._lib.reload()
+        if self._selected():
+            self._select_game(self._selected() or "")
+        parts = []
+        if report.forgotten:
+            parts.append(f"forgot {report.forgotten} removed game(s)")
+        if report.sessions:
+            parts.append(f"{report.sessions} session(s) cleared")
+        if report.artwork_files:
+            parts.append(f"{report.artwork_files} image(s) deleted")
+        self.statusBar().showMessage(
+            ("Data cleared: " + ", ".join(parts) + ".") if parts else "Data cleared.",
+            8000,
+        )
 
     # -- process signals -----------------------------------------------
 

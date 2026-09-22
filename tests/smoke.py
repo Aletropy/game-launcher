@@ -862,6 +862,73 @@ def the_old_hide_missing_setting_becomes_a_filter() -> None:
 
 
 @test
+def clearing_data_touches_only_what_was_asked() -> None:
+    from launcher.app import data_cleaner
+    from launcher.app.data_cleaner import DataKind
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        state = ctx.state
+        for name in ("Alpha", "Beta"):
+            ctx.games.add(GameConfig(name=name, executable="/g/x.exe"))
+            state.add_playtime(name, 3600)
+            state.record_session(name, datetime(2026, 9, 1), 3600)
+            state.record_launch(name)
+            state.set_favorite(name, True)
+
+        report = data_cleaner.clear(ctx, ["Alpha"], {DataKind.HISTORY, DataKind.LAUNCHES})
+        assert report.sessions == 1 and report.snapshot is not None
+        assert report.snapshot.is_file(), "no copy of the database was kept"
+        alpha, beta = state.get("Alpha"), state.get("Beta")
+        assert alpha.last_played is None and alpha.launch_count == 0
+        assert alpha.playtime_seconds == 3600, "playtime was not asked for"
+        assert alpha.favorite
+        assert beta.last_played is not None and state.session_count(["Beta"]) == 1
+
+        data_cleaner.clear(ctx, ["Alpha", "Beta"], {DataKind.PLAYTIME, DataKind.FAVORITES})
+        assert state.total_playtime() == 0
+        assert not state.get("Beta").favorite
+        assert data_cleaner.clear(ctx, [], {DataKind.HISTORY}).snapshot is None
+
+
+@test
+def removed_games_can_be_forgotten() -> None:
+    from launcher.app import data_cleaner
+    from launcher.domain.models import GameConfig
+
+    with sandbox() as ctx:
+        ctx.games.add(GameConfig(name="Kept", executable="/g/x.exe"))
+        for name in ("Kept", "Gone"):
+            ctx.state.add_playtime(name, 60)
+            ctx.state.record_session(name, datetime(2026, 9, 1), 60)
+        assert data_cleaner.orphaned_names(ctx) == ["Gone"]
+        report = data_cleaner.forget_orphans(ctx)
+        assert report.forgotten == 1 and report.sessions == 1
+        assert ctx.state.known_names() == {"Kept"}
+
+
+@test
+def the_clear_data_dialog_counts_what_it_would_clear() -> None:
+    from launcher.app.data_cleaner import DataKind
+    from launcher.domain.models import GameConfig
+    from launcher.ui.dialogs.clear_data_dialog import ClearDataDialog
+
+    qt_app()
+    with sandbox() as ctx:
+        ctx.games.add(GameConfig(name="Alpha", executable="/g/x.exe"))
+        ctx.state.record_session("Alpha", datetime(2026, 9, 1), 5400)
+        ctx.state.add_playtime("Alpha", 5400)
+        ctx.state.record_session("Gone", datetime(2026, 9, 1), 60)
+        dialog = ClearDataDialog(ctx, "Alpha")
+        box, detail = dialog._boxes[DataKind.PLAYTIME]
+        assert detail.text().startswith("1h 30m")
+        assert not dialog._clear_btn.isEnabled(), "nothing ticked yet"
+        box.setChecked(True)
+        assert dialog._clear_btn.isEnabled()
+        assert len(dialog._scope.buttons()) == 3, "this game, all, removed"
+
+
+@test
 def renaming_through_the_controller_cannot_duplicate_a_game() -> None:
     """The caller naturally mutates the game's own config; that must work."""
     from launcher.app.library_controller import LibraryController

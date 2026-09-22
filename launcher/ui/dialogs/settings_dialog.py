@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -22,6 +23,7 @@ from launcher.app.context import AppContext
 from launcher.data.settings_store import DEFAULTS
 from launcher.domain import prefixes
 from launcher.domain.backup_policy import DEFAULT_EXCLUDES
+from launcher.domain.journal import format_duration
 from launcher.services.tasks import TaskGroup
 
 #: Prompts the user can silence, and how to describe re-enabling them.
@@ -33,6 +35,9 @@ _SILENCEABLE = {
 
 class SettingsDialog(QDialog):
     """One place for every preference."""
+
+    #: The window opens it, since clearing changes what the library shows.
+    clear_data_requested = Signal()
 
     def __init__(self, context: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -57,6 +62,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_saves(), "Saves")
         tabs.addTab(self._build_artwork(), "Artwork")
         tabs.addTab(self._build_prompts(), "Prompts")
+        tabs.addTab(self._build_data(), "Data")
         layout.addWidget(tabs)
 
         buttons = QDialogButtonBox()
@@ -185,6 +191,39 @@ class SettingsDialog(QDialog):
 
         self._fetch_on_add = QCheckBox("Offer to fetch artwork when adding a game")
         form.addRow(self._fetch_on_add)
+        return page
+
+    def _build_data(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 16, 12, 12)
+        layout.setSpacing(10)
+
+        state = self._ctx.state
+        summary = QLabel(
+            f"Recorded: {state.session_count()} play session(s), "
+            f"{format_duration(state.total_playtime())} of playtime."
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+
+        hint = QLabel(
+            "Clear play history, playtime, launch counts, favourites or "
+            "artwork, for one game or all of them. A copy of the database "
+            "is saved first."
+        )
+        hint.setObjectName("hintLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        button = QPushButton("Clear data\u2026")
+        button.setObjectName("dangerButton")
+        button.clicked.connect(self.clear_data_requested)
+        row = QHBoxLayout()
+        row.addWidget(button)
+        row.addStretch()
+        layout.addLayout(row)
+        layout.addStretch()
         return page
 
     def _build_prompts(self) -> QWidget:
