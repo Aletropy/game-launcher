@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory() as d:
     ctx = AppContext.for_testing(Path(d))
 ```
 
-`tests/smoke.py` is a dependency-free suite (73 tests) covering the
+`tests/smoke.py` is a dependency-free suite (77 tests) covering the
 domain, the repositories, the services, the shell script and headless UI
 construction:
 
@@ -220,6 +220,24 @@ also choose any accent colour, square, rounded or soft corners, compact,
 comfortable or spacious density, text size and font. Changes preview
 live, and Cancel puts the old look back.
 
+**Your own themes.** New theme… (or the + card) opens a three-step
+wizard. First, start from any theme, or give a background and an accent
+colour and let the rest be generated; *Surprise me* picks a pairing.
+Next, fine-tune each of the twenty colours by swatch or hex. Last, name
+it. A miniature launcher built from the real widgets previews every
+change, and a readability check rates text against its background with
+WCAG contrast ratios, warning before you save something hard to read.
+Themes are JSON files in `~/.config/launcher/themes/`: Edit, Delete,
+Import and Export work on them from the same page.
+
+**Settings** is a sidebar of pages: Appearance, Library, Artwork, Saves
+& backups, Data, Prompts and About (version, and where everything is
+stored with a button to open each). Tools sit on the page they belong
+to. The toolbar keeps only Library and Journal, a Saves menu (shared
+saves, backups, back up now) and Settings. The game editor has General,
+Compatibility, Display and Advanced tabs; Advanced includes the Proton
+and driver variables (`WINEDEBUG`, `VKD3D_CONFIG` and friends).
+
 **The ⋯ menu** on a selected game opens its prefix, runs winecfg or
 winetricks against it, and backs up saves or opens the backups at that
 game's own folder.
@@ -252,7 +270,7 @@ Six links per prefix. `AppData`'s children are linked individually
 rather than `AppData` itself, so it stays a real directory and Wine's
 own aliases keep working.
 
-**Shared Saves…** in the toolbar shows every prefix and its state.
+**Saves → Shared saves…** in the toolbar shows every prefix and its state.
 Sharing one previews exactly what will move before touching anything.
 Where the same file exists on both sides the newer wins and the other
 goes to `Saves/.conflicts/`; nothing is deleted. Moves within one
@@ -272,7 +290,7 @@ Launching `./game-launcher.sh` directly bypasses that check.
 **Every prefix is shared by default.** On startup, before a game starts
 and after it exits (a new prefix only exists after its first run), any
 prefix still keeping its own saves is merged into the store, with a
-backup taken first. Turn this off in Settings → Saves; **Share all** in
+backup taken first. Turn this off in Settings → Saves & backups; **Share all** in
 the Shared Saves window does the same on demand.
 
 **Stop sharing** gives a prefix its own copy again. The store keeps its
@@ -295,7 +313,7 @@ copy you can browse without the launcher. They cost little:
   no space until either copy changes; elsewhere it is copied.
 - Caches are left out: `dxvk`, `Temp`, `D3DSCache`, `Package Cache` and
   any folder named `cache`, `shadercache` or similar. Add your own in
-  Settings → Saves, e.g. a mod folder.
+  Settings → Saves & backups, e.g. a mod folder.
 
 On this machine a first snapshot of 3.4 GB took 1.3 s and no extra disk,
 and the next one copied only the 2.5 KB that had changed. Before
@@ -311,7 +329,7 @@ A snapshot is taken automatically:
 Retention keeps the latest 5, then the newest per day for 7 days and per
 week for 4 weeks. Manual backups (**Back up now**) are kept until
 deleted, as is any snapshot marked **Keep forever**. All of it can be
-changed in Settings → Saves.
+changed in Settings → Saves & backups.
 
 **Backups…** (in the ⋯ → Saves menu, or the Shared Saves window) lists
 the snapshots and what each holds. Opened from a game, it goes straight
@@ -352,7 +370,7 @@ to prove they still agree.
 Artwork is stored once per game per type, scaled to the size it is shown
 at and re-encoded — a 600×900 source of ~800 KB becomes roughly 35 KB.
 
-**Clean Up Artwork…** scans what is stored and offers to resize oversized
+**Clean up artwork…** (Settings → Artwork) scans what is stored and offers to resize oversized
 files, drop duplicates, and delete artwork belonging to games no longer
 in the library. Each is a separate checkbox, the dialog shows exactly
 what each reclaims, and nothing is deleted until you confirm. Re-encoding

@@ -18,7 +18,7 @@ from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
 from launcher.ui.theme.qss import build_stylesheet
-from launcher.ui.theme.themes import DEFAULT_THEME, THEMES
+from launcher.ui.theme.themes import DEFAULT_THEME, all_themes, get_theme
 from launcher.ui.theme.tokens import Metrics, Palette
 
 if TYPE_CHECKING:
@@ -56,6 +56,14 @@ def _readable_on(colour: str) -> str:
     return "#0b0d10" if luminance > 0.55 else "#ffffff"
 
 
+def derive_selection(colours: Palette) -> Palette:
+    """Fill in the selected-row colour: the accent, faintly, over panels."""
+    if colours.selection:
+        return colours
+    amount = 0.16 if colours.is_light else 0.22
+    return replace(colours, selection=_mix(colours.accent, colours.surface, amount))
+
+
 @dataclass(frozen=True)
 class Appearance:
     """Every look-and-feel preference."""
@@ -78,7 +86,7 @@ class Appearance:
         scale = settings.get_int("text_scale")
         accent = settings.get_str("accent")
         return cls(
-            theme=theme if theme in THEMES else base.theme,
+            theme=theme if theme in all_themes() else base.theme,
             accent=accent if QColor.isValidColorName(accent) else "",
             corners=corners if corners in CORNERS else base.corners,
             density=density if density in DENSITIES else base.density,
@@ -95,7 +103,7 @@ class Appearance:
     # -- derived tokens --------------------------------------------------
 
     def palette(self) -> Palette:
-        base = THEMES.get(self.theme, THEMES[DEFAULT_THEME]).palette
+        base = get_theme(self.theme).palette
         if self.accent:
             accent = QColor(self.accent)
             base = replace(
@@ -106,12 +114,7 @@ class Appearance:
                 link=accent.darker(110).name() if base.is_light else accent.lighter(120).name(),
                 on_accent=_readable_on(accent.name()),
             )
-        if not base.selection:
-            base = replace(
-                base,
-                selection=_mix(base.accent, base.surface, 0.16 if base.is_light else 0.22),
-            )
-        return base
+        return derive_selection(base)
 
     def metrics(self) -> Metrics:
         small, normal, large = CORNERS[self.corners][1]

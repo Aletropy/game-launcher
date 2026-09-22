@@ -1,4 +1,4 @@
-"""The built-in themes."""
+"""The built-in themes, and the registry that adds the user's own."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ class Theme:
     id: str
     label: str
     palette: Palette
+    #: Made by the user; can be edited, exported and deleted.
+    custom: bool = False
 
 
 THEMES: dict[str, Theme] = {
@@ -109,3 +111,34 @@ ACCENTS: dict[str, str] = {
     "Gold": "#eab308",
     "Teal": "#14b8a6",
 }
+
+
+#: The user's themes, loaded from disk at startup and as they are made.
+_CUSTOM: dict[str, Theme] = {}
+
+
+def all_themes() -> dict[str, Theme]:
+    """Built-in themes first, then the user's, in the order they were made."""
+    return {**THEMES, **_CUSTOM}
+
+
+def get_theme(theme_id: str) -> Theme:
+    """A theme by id, falling back to the default one."""
+    return all_themes().get(theme_id) or THEMES[DEFAULT_THEME]
+
+
+def register(theme: Theme) -> None:
+    if theme.id in THEMES:
+        raise ValueError(f"{theme.id!r} is a built-in theme")
+    _CUSTOM[theme.id] = theme
+
+
+def unregister(theme_id: str) -> None:
+    _CUSTOM.pop(theme_id, None)
+
+
+def set_custom(themes: list[Theme]) -> None:
+    """Replace every registered custom theme."""
+    _CUSTOM.clear()
+    for theme in themes:
+        register(theme)

@@ -617,6 +617,16 @@ QPushButton#topMenuButton::menu-indicator {
     right: 6px;
 }
 
+QLabel#checkOk {
+    color: $accent;
+    font-weight: bold;
+}
+
+QLabel#checkLow {
+    color: $favorite;
+    font-weight: bold;
+}
+
 QPushButton#stepPill {
     background-color: transparent;
     color: $fg_muted;

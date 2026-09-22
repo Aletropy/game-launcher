@@ -33,6 +33,7 @@ from launcher.domain.backup_policy import DEFAULT_EXCLUDES
 from launcher.domain.journal import format_duration
 from launcher.services.tasks import TaskGroup
 from launcher.ui.theme import Appearance, apply_theme
+from launcher.ui.theme.custom import CustomThemeStore
 from launcher.ui.widgets.appearance_picker import AppearancePanel
 
 #: Prompts the user can silence, and how to describe re-enabling them.
@@ -208,7 +209,9 @@ class SettingsDialog(QDialog):
     # -- pages ---------------------------------------------------------
 
     def _build_appearance(self) -> QWidget:
-        self._appearance = AppearancePanel(self._original_look)
+        self._appearance = AppearancePanel(
+            self._original_look, CustomThemeStore(self._ctx.paths.themes_dir)
+        )
         self._appearance.changed.connect(self._preview_look)
         return self._appearance
 

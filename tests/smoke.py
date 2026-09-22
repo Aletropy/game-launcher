@@ -1977,6 +1977,103 @@ def cancelling_settings_puts_the_old_look_back() -> None:
 
 
 @test
+def generated_themes_read_well() -> None:
+    from launcher.ui.theme.custom import check, generate
+
+    qt_app()
+    for background, accent in (
+        ("#101820", "#ff6b35"), ("#f5f1e8", "#0f766e"), ("#2d0a31", "#f472b6"),
+        ("#000000", "#ffff00"), ("#ffffff", "#1d4ed8"),
+    ):
+        colours = generate(background, accent)
+        failing = [(label, round(r, 2)) for label, r, need in check(colours) if r < need]
+        assert not failing, f"{background}/{accent}: {failing}"
+    assert generate("#f5f1e8", "#0f766e").is_light
+    assert not generate("#101820", "#ff6b35").is_light
+
+
+@test
+def custom_themes_round_trip_and_reject_junk() -> None:
+    from launcher.ui.theme.custom import CustomThemeStore, generate
+    from launcher.ui.theme.themes import Theme, all_themes, set_custom
+
+    qt_app()
+    with tempfile.TemporaryDirectory() as d:
+        store = CustomThemeStore(Path(d) / "themes")
+        try:
+            theme_id = store.new_id("Sunset Drive")
+            assert theme_id == "custom-sunset-drive"
+            saved = store.save(Theme(theme_id, "Sunset Drive", generate("#1a0f1f", "#ff7a59")))
+            assert saved.custom and theme_id in all_themes()
+            assert store.new_id("Sunset Drive") == "custom-sunset-drive-2"
+
+            set_custom([])
+            loaded = store.load_all()
+            assert [t.id for t in loaded] == [theme_id]
+            assert loaded[0].palette.accent == "#ff7a59"
+
+            exported = Path(d) / "shared.json"
+            store.export(loaded[0], exported)
+            copy = store.import_file(exported)
+            assert copy.id != theme_id and copy.palette == loaded[0].palette
+
+            (store.directory / "broken.json").write_text("{not json")
+            (store.directory / "empty.json").write_text('{"name": "x", "colours": {}}')
+            assert len(store.load_all()) == 2, "junk files must be skipped"
+            bad = Path(d) / "bad.json"
+            bad.write_text('{"name": "Bad", "colours": {"bg": "nope"}}')
+            try:
+                store.import_file(bad)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("a theme without valid colours was imported")
+
+            store.delete(copy.id)
+            assert copy.id not in all_themes()
+        finally:
+            set_custom([])
+
+
+@test
+def the_theme_wizard_creates_and_edits_a_theme() -> None:
+    from launcher.ui.dialogs.theme_wizard import ThemeWizard
+    from launcher.ui.theme.custom import CustomThemeStore
+    from launcher.ui.theme.themes import get_theme, set_custom
+
+    qt_app()
+    with tempfile.TemporaryDirectory() as d:
+        store = CustomThemeStore(Path(d))
+        try:
+            wizard = ThemeWizard(store, start_from="frost")
+            assert wizard.colours.accent == get_theme("frost").palette.accent
+            wizard._bg_button.set_colour("#20122a")
+            wizard._accent_button.set_colour("#ffb000")
+            wizard._choose_generate()
+            assert wizard.colours.bg == "#20122a"
+            assert not wizard._save_btn.isEnabled(), "cannot save unnamed"
+
+            wizard._rows["danger"].changed.emit("danger", "#ff0055")
+            assert wizard.colours.danger == "#ff0055"
+            assert "#20122a" in wizard._preview.styleSheet(), "preview not restyled"
+
+            wizard._name.setText("Night Market")
+            wizard._save()
+            saved = wizard.saved
+            assert saved is not None and saved.palette.danger == "#ff0055"
+            assert (Path(d) / f"{saved.id}.json").is_file()
+
+            editor = ThemeWizard(store, editing=saved)
+            assert editor._pages.currentIndex() == 1, "editing starts at the colours"
+            editor._rows["accent"].changed.emit("accent", "#00c2a8")
+            editor._save()
+            assert editor.saved is not None and editor.saved.id == saved.id
+            assert get_theme(saved.id).palette.accent == "#00c2a8"
+        finally:
+            set_custom([])
+
+
+@test
 def dialogs_all_construct() -> None:
     from launcher.app.library_controller import LibraryController
     from launcher.domain.models import GameConfig

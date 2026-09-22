@@ -6,13 +6,17 @@ theme can be judged before it is picked.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFontDatabase, QMouseEvent, QPainter, QPainterPath, QPaintEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QColorDialog,
     QComboBox,
+    QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -22,8 +26,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from launcher.ui.theme import ACCENTS, THEMES, Appearance, Theme, palette
+from launcher.ui.dialogs.confirm import Answer, ask, warn
+from launcher.ui.dialogs.theme_wizard import ThemeWizard
+from launcher.ui.theme import ACCENTS, Appearance, Theme, palette
 from launcher.ui.theme.appearance import CORNERS, DENSITIES, TEXT_SCALES
+from launcher.ui.theme.custom import CustomThemeStore
+from launcher.ui.theme.themes import all_themes, get_theme
 from launcher.ui.theme.tokens import Palette
 
 #: Fonts worth offering first, when installed.
@@ -152,6 +160,63 @@ class ThemeCard(QWidget):
             int(Qt.AlignmentFlag.AlignCenter),
             ("✓ " if self._selected else "") + self._theme.label,
         )
+        if self._theme.custom:
+            tag = QRectF(mock.right() - 50, mock.top() + 6, 44, 16)
+            path = QPainterPath()
+            path.addRoundedRect(tag, 8, 8)
+            painter.fillPath(path, QColor(0, 0, 0, 150))
+            font.setBold(False)
+            font.setPixelSize(10)
+            painter.setFont(font)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(tag, int(Qt.AlignmentFlag.AlignCenter), "Custom")
+
+
+class NewThemeCard(QWidget):
+    """The last card in the gallery: make a theme of your own."""
+
+    clicked = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._hover = False
+        self.setFixedSize(QSize(148, 112))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Create a theme, starting from the one in use")
+
+    def enterEvent(self, event: object) -> None:
+        self._hover = True
+        self.update()
+
+    def leaveEvent(self, event: object) -> None:
+        self._hover = False
+        self.update()
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        current = palette()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        box = QRectF(3.5, 3.5, self.width() - 7, 79)
+        pen = painter.pen()
+        pen.setColor(QColor(current.accent if self._hover else current.border_hover))
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setWidthF(1.5)
+        painter.setPen(pen)
+        painter.drawRoundedRect(box, 7, 7)
+        big = painter.font()
+        big.setPixelSize(30)
+        painter.setFont(big)
+        painter.setPen(QColor(current.accent if self._hover else current.fg_muted))
+        painter.drawText(box, int(Qt.AlignmentFlag.AlignCenter), "+")
+        painter.setFont(self.font())
+        painter.setPen(QColor(current.fg))
+        painter.drawText(
+            QRectF(0, 88, self.width(), 22), int(Qt.AlignmentFlag.AlignCenter), "New theme"
+        )
 
 
 class Swatch(QToolButton):
@@ -221,30 +286,71 @@ class AppearancePanel(QWidget):
 
     changed = Signal(object)
 
-    def __init__(self, appearance: Appearance, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        appearance: Appearance,
+        store: CustomThemeStore | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self._appearance = appearance
+        self._store = store
         self._setup_ui()
         self.set_appearance(appearance)
+
+    @staticmethod
+    def _card(title: str) -> tuple[QFrame, QVBoxLayout]:
+        card = QFrame()
+        card.setObjectName("settingsCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(12)
+        heading = QLabel(title)
+        heading.setObjectName("cardTitle")
+        layout.addWidget(heading)
+        return card, layout
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
-        heading = QLabel("Theme")
-        heading.setObjectName("sectionTitle")
-        layout.addWidget(heading)
-        grid = QGridLayout()
-        grid.setSpacing(10)
+        theme_card, theme_layout = self._card("Theme")
+        self._grid = QGridLayout()
+        self._grid.setSpacing(10)
         self._cards: dict[str, ThemeCard] = {}
-        for index, theme in enumerate(THEMES.values()):
-            card = ThemeCard(theme)
-            card.clicked.connect(lambda theme_id: self._change(theme=theme_id))
-            grid.addWidget(card, index // 4, index % 4)
-            self._cards[theme.id] = card
-        layout.addLayout(grid)
+        theme_layout.addLayout(self._grid)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
+        self._new_btn = QPushButton("New theme…")
+        self._new_btn.setToolTip("Start a theme from the one in use")
+        self._new_btn.clicked.connect(self._new_theme)
+        self._edit_btn = QPushButton("Edit…")
+        self._edit_btn.clicked.connect(self._edit_theme)
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.setObjectName("dangerButton")
+        self._delete_btn.clicked.connect(self._delete_theme)
+        self._import_btn = QPushButton("Import…")
+        self._import_btn.clicked.connect(self._import_theme)
+        self._export_btn = QPushButton("Export…")
+        self._export_btn.clicked.connect(self._export_theme)
+        for button in (self._new_btn, self._edit_btn, self._delete_btn):
+            actions.addWidget(button)
+        actions.addStretch()
+        for button in (self._import_btn, self._export_btn):
+            actions.addWidget(button)
+        theme_layout.addLayout(actions)
+        self._theme_buttons = (
+            self._new_btn, self._edit_btn, self._delete_btn,
+            self._import_btn, self._export_btn,
+        )
+        for button in self._theme_buttons:
+            button.setVisible(self._store is not None)
+        layout.addWidget(theme_card)
+        self._rebuild_cards()
+
+        layout_card, layout_layout = self._card("Layout & text")
         form = QFormLayout()
         form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -301,12 +407,110 @@ class AppearancePanel(QWidget):
             lambda _: self._change(font=self._font.currentData() or "")
         )
         form.addRow("Font", self._font)
-        layout.addLayout(form)
+        layout_layout.addLayout(form)
+        layout.addWidget(layout_card)
 
         hint = QLabel("Changes show straight away. Cancel puts everything back.")
         hint.setObjectName("hintLabel")
         layout.addWidget(hint)
-        layout.addStretch()
+
+    # -- gallery -------------------------------------------------------
+
+    def _rebuild_cards(self) -> None:
+        """Lay out every theme, the user's included, then the New card."""
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.deleteLater()
+        self._cards.clear()
+        themes = list(all_themes().values())
+        for index, theme in enumerate(themes):
+            card = ThemeCard(theme)
+            card.clicked.connect(lambda theme_id: self._change(theme=theme_id))
+            self._grid.addWidget(card, index // 4, index % 4)
+            self._cards[theme.id] = card
+        if self._store is not None:
+            new_card = NewThemeCard()
+            new_card.clicked.connect(self._new_theme)
+            self._grid.addWidget(new_card, len(themes) // 4, len(themes) % 4)
+
+    def _update_theme_actions(self) -> None:
+        custom = get_theme(self._appearance.theme).custom
+        self._edit_btn.setEnabled(custom)
+        self._delete_btn.setEnabled(custom)
+        self._export_btn.setEnabled(custom)
+        tip = "" if custom else "Built-in themes stay as they are; New theme starts from one."
+        for button in (self._edit_btn, self._delete_btn):
+            button.setToolTip(tip)
+
+    def _use_theme(self, theme_id: str) -> None:
+        """Switch to a theme and apply it.
+
+        Always emits, even for the theme already in use: after an edit the
+        id is the same but the colours are not.
+        """
+        self._rebuild_cards()
+        updated = self._appearance.with_(theme=theme_id, accent="")
+        self.set_appearance(updated)
+        self.changed.emit(updated)
+
+    def _new_theme(self) -> None:
+        if self._store is None:
+            return
+        wizard = ThemeWizard(self._store, self, start_from=self._appearance.theme)
+        if wizard.exec() and wizard.saved is not None:
+            if wizard.use_now:
+                self._use_theme(wizard.saved.id)
+            else:
+                self._rebuild_cards()
+                self.set_appearance(self._appearance)
+
+    def _edit_theme(self) -> None:
+        theme = get_theme(self._appearance.theme)
+        if self._store is None or not theme.custom:
+            return
+        wizard = ThemeWizard(self._store, self, editing=theme)
+        if wizard.exec() and wizard.saved is not None:
+            self._use_theme(wizard.saved.id)
+
+    def _delete_theme(self) -> None:
+        theme = get_theme(self._appearance.theme)
+        if self._store is None or not theme.custom:
+            return
+        if ask(
+            self, "Delete Theme", f"Delete the theme '{theme.label}'?", default=Answer.NO
+        ) is not Answer.YES:
+            return
+        self._store.delete(theme.id)
+        self._use_theme("midnight")
+
+    def _import_theme(self) -> None:
+        if self._store is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Import a theme", "", "Themes (*.json)")
+        if not path:
+            return
+        try:
+            theme = self._store.import_file(Path(path))
+        except (OSError, ValueError) as e:
+            warn(self, "Import Theme", f"That file is not a theme this launcher can read:\n{e}")
+            return
+        self._use_theme(theme.id)
+
+    def _export_theme(self) -> None:
+        theme = get_theme(self._appearance.theme)
+        if self._store is None or not theme.custom:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export theme", f"{theme.label}.json", "Themes (*.json)"
+        )
+        if not path:
+            return
+        try:
+            self._store.export(theme, Path(path))
+        except OSError as e:
+            warn(self, "Export Theme", f"Could not write the file:\n{e}")
 
     # -- state ---------------------------------------------------------
 
@@ -320,7 +524,7 @@ class AppearancePanel(QWidget):
         for theme_id, card in self._cards.items():
             card.set_selected(theme_id == appearance.theme)
             card.set_palette(appearance.with_(theme=theme_id).palette())
-        self._theme_swatch.colour = THEMES[appearance.theme].palette.accent
+        self._theme_swatch.colour = get_theme(appearance.theme).palette.accent
         self._theme_swatch.update()
         accent = appearance.accent.lower()
         if not accent:
@@ -338,6 +542,7 @@ class AppearancePanel(QWidget):
         index = self._font.findData(appearance.font)
         self._font.setCurrentIndex(max(0, index))
         self._font.blockSignals(False)
+        self._update_theme_actions()
 
     def _change(self, **changes: object) -> None:
         updated = self._appearance.with_(**changes)
@@ -347,7 +552,8 @@ class AppearancePanel(QWidget):
         self.changed.emit(updated)
 
     def _pick_custom(self) -> None:
-        start = QColor(self._appearance.accent or THEMES[self._appearance.theme].palette.accent)
+        own = get_theme(self._appearance.theme).palette.accent
+        start = QColor(self._appearance.accent or own)
         colour = QColorDialog.getColor(start, self, "Accent colour")
         if colour.isValid():
             self._change(accent=colour.name())

@@ -66,7 +66,9 @@ def _running_dot(colour: str) -> QIcon:
     return QIcon(pixmap)
 
 
-def letter_tile(name: str, size: QSize, dpr: float = 1.0) -> QPixmap:
+def letter_tile(
+    name: str, size: QSize, dpr: float = 1.0, *, light: bool | None = None
+) -> QPixmap:
     """A rounded tile with a game's initial, for games without art.
 
     The hue comes from the name, so a game keeps its colour.
@@ -78,7 +80,8 @@ def letter_tile(name: str, size: QSize, dpr: float = 1.0) -> QPixmap:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
-    light = palette().is_light
+    if light is None:
+        light = palette().is_light
     painter.setBrush(QColor.fromHsl(hue, 110 if light else 90, 215 if light else 70))
     painter.drawRoundedRect(0, 0, size.width(), size.height(), 6, 6)
     font = painter.font()

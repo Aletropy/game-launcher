@@ -104,6 +104,11 @@ class Paths:
         return self.config / "favorites.json"
 
     @property
+    def themes_dir(self) -> Path:
+        """Themes the user made, one JSON file each."""
+        return self.config / "themes"
+
+    @property
     def state_backups_dir(self) -> Path:
         """Copies of the database taken before clearing data."""
         return self.data / "state-backups"
