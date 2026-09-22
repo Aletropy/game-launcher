@@ -37,6 +37,7 @@ from launcher.domain.journal import Day, Session
 from launcher.domain.models import Game, format_last_played
 from launcher.services.artwork import GRID, ICON, ArtworkService
 from launcher.ui.theme import palette
+from launcher.ui.widgets.art_source import ArtSource
 from launcher.ui.widgets.hero_banner import HeroBanner
 
 _WEEKS = 26
@@ -224,7 +225,7 @@ class CoverTile(QWidget):
     def __init__(
         self,
         game: Game,
-        artwork: ArtworkService,
+        artwork: ArtSource,
         caption: str,
         parent: QWidget | None = None,
     ) -> None:

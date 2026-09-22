@@ -549,6 +549,62 @@ QToolButton#swatch {
     border: none;
 }
 
+QPushButton#stepPill {
+    background-color: transparent;
+    color: $fg_muted;
+    border: 1px solid $border;
+    border-radius: 14px;
+    padding: 5px 14px;
+}
+
+QPushButton#stepPill:hover {
+    color: $fg_bright;
+    border-color: $border_hover;
+}
+
+QPushButton#stepPill:checked {
+    background-color: $accent;
+    border-color: $accent;
+    color: $on_accent;
+    font-weight: bold;
+}
+
+QFrame#previewPanel {
+    background-color: $surface;
+    border: 1px solid $border;
+    border-radius: ${radius_lg}px;
+}
+
+QListWidget#artGrid {
+    background-color: $bg;
+    border: 1px solid $border;
+    border-radius: ${radius}px;
+    padding: 6px;
+}
+
+QListWidget#artGrid::item {
+    color: $fg_muted;
+    border: 2px solid transparent;
+    border-radius: ${radius}px;
+    padding: 4px;
+}
+
+QListWidget#artGrid::item:hover {
+    background-color: $hover;
+}
+
+QListWidget#artGrid::item:selected {
+    background-color: $selection;
+    border-color: $accent;
+    color: $fg_bright;
+}
+
+QLabel#reviewThumb {
+    background-color: $raised;
+    border-radius: ${radius_sm}px;
+    color: $fg_muted;
+}
+
 QToolButton#moreButton {
     background-color: $raised;
     color: $fg;

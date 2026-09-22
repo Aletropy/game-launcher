@@ -524,13 +524,17 @@ def banner_searches_ask_the_api_for_banners() -> None:
     saved as a banner, so portrait art got cropped into a thin strip and
     stretched - the blurry, badly fitting banner.
     """
-    from launcher.services.sgdb import ENDPOINTS
-    from launcher.ui.dialogs.sgdb_dialog import ART_TYPES
+    from launcher.services.sgdb import ENDPOINTS, ArtQuery
+    from launcher.ui.dialogs.artwork_wizard import ART_STEPS
 
-    assert ART_TYPES["Banners"] == "hero"
-    assert ART_TYPES["Covers"] == "grid"
-    assert set(ART_TYPES.values()) == set(ENDPOINTS), "every type needs an endpoint"
+    titles = {step.title: step.art for step in ART_STEPS}
+    assert titles["Banner"] == "hero"
+    assert titles["Cover"] == "grid"
+    assert set(titles.values()) == set(ENDPOINTS), "every type needs an endpoint"
     assert ENDPOINTS["hero"] == "heroes"
+    assert "dimensions" in ArtQuery("grid").params(), "covers must be portrait"
+    assert "dimensions" not in ArtQuery("hero").params()
+    assert ArtQuery("hero", style="white_logo").params().get("styles") is None
 
 
 @test
@@ -1765,6 +1769,116 @@ def every_feature_dialog_is_reachable_from_the_window() -> None:
         window.close()
 
 
+class _FakeSgdb:
+    """SteamGridDB without the network: every image is a solid colour."""
+
+    configured = True
+
+    def __init__(self) -> None:
+        self.queries: list = []
+
+    def find_games(self, query):
+        from launcher.services.sgdb import GameMatch
+
+        return [GameMatch(7, "Other Game"), GameMatch(1, query, 2024, True)]
+
+    def find_art(self, game_id, query):
+        from launcher.services.sgdb import ArtResult
+
+        self.queries.append((game_id, query))
+        w, h = {"grid": (600, 900), "hero": (1920, 620), "logo": (800, 300),
+                "icon": (256, 256)}[query.art]
+        return [
+            ArtResult(id=i, url=f"full:{query.art}:{w}x{h}", thumb=f"thumb:{query.art}",
+                      width=w, height=h, author="someone")
+            for i in (1, 2)
+        ]
+
+    def download(self, url):
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+        from PySide6.QtGui import QColor, QImage
+
+        size = url.rsplit(":", 1)[-1]
+        w, h = (int(v) for v in size.split("x")) if "x" in size else (60, 90)
+        image = QImage(w, h, QImage.Format.Format_RGB32)
+        image.fill(QColor("#3366aa"))
+        data = QByteArray()
+        buffer = QBuffer(data)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG")
+        return bytes(data.data())
+
+
+def _pump(until, timeout: float = 10.0) -> None:
+    from PySide6.QtCore import QThreadPool
+
+    app = qt_app()
+    deadline = time.monotonic() + timeout
+    while not until():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out waiting for background work")
+        QThreadPool.globalInstance().waitForDone(20)
+        app.processEvents()
+
+
+@test
+def the_artwork_wizard_previews_then_applies() -> None:
+    from launcher.domain.models import GameConfig
+    from launcher.services.artwork import GRID, HERO
+    from launcher.ui.dialogs.artwork_wizard import ArtworkWizard
+
+    qt_app()
+    with sandbox() as ctx:
+        ctx.games.add(GameConfig(name="Alpha", executable="/g/a.exe"))
+        fake = _FakeSgdb()
+        wizard = ArtworkWizard(ctx, "Alpha", client=fake)
+        applied: list[str] = []
+        wizard.applied.connect(applied.append)
+
+        _pump(lambda: wizard._match is not None)
+        assert wizard._match.id == 1, "the exact name match should be picked"
+
+        wizard._go(1)  # Cover
+        page = wizard._art_pages[GRID.name]
+        _pump(lambda: page.grid.count() == 2)
+        assert fake.queries[-1][0] == 1
+        assert not wizard._apply.isEnabled(), "nothing chosen yet"
+
+        page.result_chosen.emit(page.grid.item(0).data(0x0100))
+        _pump(lambda: wizard._choices[GRID.name].data is not None)
+        preview = wizard._art.image("Alpha", GRID.name)
+        assert preview is not None and preview.height() == 900, "full image not previewed"
+        assert ctx.artwork.path_for("Alpha", GRID.name) is None, "saved before Apply"
+        assert wizard._apply.isEnabled()
+
+        wizard._set_choice(HERO.name, wizard._choices[HERO.name].__class__(kind="remove"))
+        assert wizard._art.image("Alpha", HERO.name) is None
+
+        wizard._go(5)
+        wizard._apply_choices()
+        assert applied == ["Alpha"]
+        assert ctx.artwork.path_for("Alpha", GRID.name) is not None
+
+
+@test
+def the_artwork_wizard_works_without_an_api_key() -> None:
+    from launcher.services.artwork import ICON
+    from launcher.ui.dialogs.artwork_wizard import ArtworkWizard
+
+    qt_app()
+    with sandbox() as ctx, tempfile.TemporaryDirectory() as d:
+        fake = _FakeSgdb()
+        fake.configured = False
+        wizard = ArtworkWizard(ctx, "Beta", client=fake)
+        assert not wizard._find.search_btn.isEnabled()
+        icon = Path(d) / "icon.png"
+        icon.write_bytes(fake.download("x:256x256"))
+        wizard._choose_file(ICON.name, str(icon))
+        assert wizard._apply.isEnabled()
+        wizard._apply_choices()
+        assert ctx.artwork.path_for("Beta", ICON.name) is not None
+
+
 @test
 def every_theme_builds_a_complete_stylesheet() -> None:
     from launcher.ui.theme import THEMES, Appearance, build_stylesheet
@@ -1834,12 +1948,12 @@ def cancelling_settings_puts_the_old_look_back() -> None:
 def dialogs_all_construct() -> None:
     from launcher.app.library_controller import LibraryController
     from launcher.domain.models import GameConfig
+    from launcher.ui.dialogs.artwork_wizard import ArtworkWizard
     from launcher.ui.dialogs.backups_dialog import BackupsDialog
     from launcher.ui.dialogs.game_dialog import AddGameDialog
     from launcher.ui.dialogs.import_dialog import ImportGamesDialog
     from launcher.ui.dialogs.saves_dialog import SavesDialog
     from launcher.ui.dialogs.settings_dialog import SettingsDialog
-    from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 
     app = qt_app()
     with sandbox() as ctx:
@@ -1852,7 +1966,7 @@ def dialogs_all_construct() -> None:
             AddGameDialog(ctx.paths, game=game),
             SettingsDialog(ctx),
             ImportGamesDialog(ctx),
-            SGDBDialog(ctx, game_name="Alpha"),
+            ArtworkWizard(ctx, "Alpha"),
             BackupsDialog(ctx, library.saves, game_hint="Alpha"),
             SavesDialog(ctx, library.saves),
         ):

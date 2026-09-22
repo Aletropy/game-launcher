@@ -29,6 +29,7 @@ from launcher.app.data_cleaner import DataKind
 from launcher.app.library_controller import LibraryController
 from launcher.domain.models import Game, SortOrder
 from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
+from launcher.ui.dialogs.artwork_wizard import ArtworkWizard
 from launcher.ui.dialogs.backups_dialog import BackupsDialog
 from launcher.ui.dialogs.clear_data_dialog import ClearDataDialog
 from launcher.ui.dialogs.confirm import Answer, StickyChoice, ask, warn
@@ -36,7 +37,6 @@ from launcher.ui.dialogs.game_dialog import AddGameDialog
 from launcher.ui.dialogs.import_dialog import ImportGamesDialog
 from launcher.ui.dialogs.saves_dialog import SavesDialog
 from launcher.ui.dialogs.settings_dialog import SettingsDialog
-from launcher.ui.dialogs.sgdb_dialog import SGDBDialog
 from launcher.ui.theme import notifier
 from launcher.ui.widgets import log_view
 from launcher.ui.widgets.detail_panel import GameDetailPanel
@@ -346,8 +346,8 @@ class MainWindow(QMainWindow):
         ):
             answer = ask(
                 self,
-                "Fetch Artwork?",
-                f"Fetch artwork from SteamGridDB for '{config.name}'?",
+                "Choose Artwork?",
+                f"Choose artwork for '{config.name}' now?",
                 buttons=(Answer.YES, Answer.NO, Answer.YES_ALL, Answer.NO_ALL),
                 default=Answer.YES,
                 sticky=self._artwork_sticky,
@@ -394,15 +394,9 @@ class MainWindow(QMainWindow):
     # -- artwork -------------------------------------------------------
 
     def _fetch_artwork(self, name: str) -> None:
-        game = self._lib.game(name)
-        dialog = SGDBDialog(
-            self._ctx,
-            game_name=name,
-            steam_app_id=game.config.game_id if game else "",
-            parent=self,
-        )
-        dialog.artwork_downloaded.connect(lambda _: self._lib.refresh_game(name))
-        dialog.exec()
+        wizard = ArtworkWizard(self._ctx, name, self)
+        wizard.applied.connect(self._lib.refresh_game)
+        wizard.exec()
 
     def _artwork_dropped(self, name: str, path: str) -> None:
         answer = ask(

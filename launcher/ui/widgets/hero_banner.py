@@ -27,8 +27,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from launcher.services.artwork import GRID, HERO, LOGO, ArtworkService
+from launcher.services.artwork import GRID, HERO, LOGO
 from launcher.ui.theme import palette
+from launcher.ui.widgets.art_source import ArtSource
 
 _MARGIN = 20
 _TEXT_BRIGHT = "#f4f6f8"
@@ -96,7 +97,7 @@ class HeroBanner(QWidget):
 
     def __init__(
         self,
-        artwork: ArtworkService,
+        artwork: ArtSource,
         parent: QWidget | None = None,
         height: int = 232,
     ) -> None:

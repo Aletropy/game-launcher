@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -27,6 +29,105 @@ ENDPOINTS: dict[str, str] = {
     "icon": "icons",
     "logo": "logos",
 }
+
+
+#: Styles SteamGridDB accepts, per art type.
+STYLES: dict[str, tuple[str, ...]] = {
+    "grid": ("alternate", "blurred", "white_logo", "material", "no_logo"),
+    "hero": ("alternate", "blurred", "material"),
+    "logo": ("official", "white", "black", "custom"),
+    "icon": ("official", "custom"),
+}
+#: Portrait capsule sizes: what the library calls a cover.
+PORTRAIT_DIMENSIONS = ("600x900", "342x482", "660x930")
+
+
+@dataclass(frozen=True)
+class ArtQuery:
+    """Filters for one artwork search."""
+
+    art: str
+    style: str = ""
+    #: Only portrait covers; SteamGridDB also serves wide grid capsules.
+    portrait_only: bool = True
+    nsfw: bool = False
+    humor: bool = False
+    page: int = 0
+
+    def params(self) -> dict[str, str]:
+        # Static only: the library draws still images, and an animated
+        # upload would be stored as its first frame anyway.
+        params = {
+            "types": "static",
+            "nsfw": "any" if self.nsfw else "false",
+            "humor": "any" if self.humor else "false",
+            "page": str(self.page),
+        }
+        if self.style and self.style in STYLES.get(self.art, ()):
+            params["styles"] = self.style
+        if self.art == "grid" and self.portrait_only:
+            params["dimensions"] = ",".join(PORTRAIT_DIMENSIONS)
+        return params
+
+
+@dataclass(frozen=True)
+class ArtResult:
+    """One image SteamGridDB offers."""
+
+    id: int
+    url: str
+    thumb: str
+    width: int
+    height: int
+    style: str = ""
+    author: str = ""
+    score: int = 0
+
+    @classmethod
+    def from_api(cls, raw: dict) -> ArtResult:
+        author = raw.get("author") or {}
+        return cls(
+            id=int(raw.get("id", 0)),
+            url=str(raw.get("url", "")),
+            thumb=str(raw.get("thumb") or raw.get("url", "")),
+            width=int(raw.get("width") or 0),
+            height=int(raw.get("height") or 0),
+            style=str(raw.get("style", "")),
+            author=str(author.get("name", "")) if isinstance(author, dict) else "",
+            score=int(raw.get("score") or 0),
+        )
+
+    @property
+    def size_label(self) -> str:
+        return f"{self.width}\u00d7{self.height}" if self.width and self.height else ""
+
+
+@dataclass(frozen=True)
+class GameMatch:
+    """A game SteamGridDB knows."""
+
+    id: int
+    name: str
+    year: int | None = None
+    verified: bool = False
+
+    @classmethod
+    def from_api(cls, raw: dict) -> GameMatch:
+        year = None
+        stamp = raw.get("release_date")
+        if isinstance(stamp, int | float) and stamp > 0:
+            year = datetime.fromtimestamp(stamp, tz=UTC).year
+        return cls(
+            id=int(raw.get("id", 0)),
+            name=str(raw.get("name", "")),
+            year=year,
+            verified=bool(raw.get("verified", False)),
+        )
+
+    @property
+    def label(self) -> str:
+        year = f" ({self.year})" if self.year else ""
+        return f"{self.name}{year}"
 
 
 def _api_get(endpoint: str, api_key: str, params: dict | None = None) -> dict:
@@ -73,19 +174,6 @@ class SgdbClient:
     def search(self, query: str) -> list[dict]:
         return search_games(query, self.api_key)
 
-    def heroes(self, game_id: int) -> list[dict]:
-        return get_heroes(game_id, self.api_key)
-
-    def grids(self, game_id: int) -> list[dict]:
-        return get_grids(game_id, self.api_key)
-
-    def artwork_for(self, query: str, art_type: str) -> list[dict]:
-        """Look a game up by name and return its artwork of one type."""
-        matches = self.search(query)
-        if not matches:
-            raise SGDBError("No games found.")
-        return get_artwork(matches[0]["id"], art_type, self.api_key)
-
     def verify_key(self, key: str) -> str:
         """Check a key works. Returns a message describing the result."""
         try:
@@ -97,31 +185,22 @@ class SgdbClient:
     def download(self, url: str) -> bytes:
         return download_bytes(url)
 
+    # -- typed API, used by the artwork wizard -------------------------
+
+    def find_games(self, query: str) -> list[GameMatch]:
+        return [GameMatch.from_api(raw) for raw in self.search(query)]
+
+    def find_art(self, game_id: int, query: ArtQuery) -> list[ArtResult]:
+        endpoint = ENDPOINTS.get(query.art)
+        if endpoint is None:
+            raise SGDBError(f"Unknown artwork type: {query.art}")
+        result = _api_get(f"/{endpoint}/game/{game_id}", self.api_key, query.params())
+        return [ArtResult.from_api(raw) for raw in result.get("data", []) if raw.get("url")]
+
 
 def search_games(query: str, api_key: str) -> list[dict]:
     """Search for games by name. Returns list of {id, name, types, verified}."""
     result = _api_get(f"/search/autocomplete/{urllib.parse.quote(query)}", api_key)
-    return result.get("data", [])
-
-
-def get_artwork(game_id: int, art_type: str, api_key: str) -> list[dict]:
-    """Fetch artwork of one type ("grid", "hero", "icon", "logo")."""
-    endpoint = ENDPOINTS.get(art_type)
-    if endpoint is None:
-        raise SGDBError(f"Unknown artwork type: {art_type}")
-    result = _api_get(f"/{endpoint}/game/{game_id}", api_key)
-    return result.get("data", [])
-
-
-def get_heroes(game_id: int, api_key: str) -> list[dict]:
-    """Fetch hero images for a SGDB game ID."""
-    result = _api_get(f"/heroes/game/{game_id}", api_key)
-    return result.get("data", [])
-
-
-def get_grids(game_id: int, api_key: str) -> list[dict]:
-    """Fetch grid images for a SGDB game ID."""
-    result = _api_get(f"/grids/game/{game_id}", api_key)
     return result.get("data", [])
 
 

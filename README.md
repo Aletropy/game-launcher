@@ -163,7 +163,7 @@ with tempfile.TemporaryDirectory() as d:
     ctx = AppContext.for_testing(Path(d))
 ```
 
-`tests/smoke.py` is a dependency-free suite (61 tests) covering the
+`tests/smoke.py` is a dependency-free suite (73 tests) covering the
 domain, the repositories, the services, the shell script and headless UI
 construction:
 
@@ -179,7 +179,8 @@ construction:
 |---|---|
 | Select a game | Shows its details. Selecting never launches. |
 | Play | The Play button, a double-click, Enter, or `Ctrl+P` |
-| Sort | By name, recently played, most played or recently added |
+| Sort | Name A–Z or Z–A, last played, most or least played, recently added, most launched; optionally favourites first |
+| Filter | Favourites, running now, missing a cover, installed or missing, played or never played, shared or own prefix |
 | Search | `Ctrl+F` |
 | Add / import | `Ctrl+N` / `Ctrl+I` |
 | Edit / settings | `Ctrl+E` / `Ctrl+,` |
@@ -194,8 +195,30 @@ games: installers, crash handlers, redistributables and anything inside
 a Wine prefix are listed but unticked, and where a folder holds several
 executables the largest is preferred. Review the list before importing.
 
-**Artwork** can come from SteamGridDB (needs an API key, set in
-Settings) or by dragging an image onto the detail panel.
+Filters are remembered between sessions. The count under the list says
+how many games they hide, with a link that clears them.
+
+**Artwork** (⋯ → Artwork…) is a wizard. Find the game on SteamGridDB,
+then pick a cover, banner, logo and icon from everything it has,
+filtered by style, portrait shape, adult and humour content. Each step
+also takes a local file, keeps what is there, or removes it. The right
+side is the real library row, banner, Journal cover and the icon at
+every size it is drawn, redrawn from your picks; thumbnails show at once
+and are replaced by the full image as it downloads. Nothing is saved
+until Apply. Without an API key the wizard still works with files, and
+an image can also be dragged onto the detail panel.
+
+**Clear data** (⋯ → Clear data…, or Settings → Data) clears any mix of
+play history, total playtime, last played and launch counts, favourites,
+artwork and logs, for one game or all of them, and can forget games no
+longer in the library. A copy of the database is saved to
+`~/.local/share/launcher/state-backups/` first; the last five are kept.
+
+**Appearance** (Settings → Appearance) has seven themes: Midnight,
+Harbour, Nebula, Frost, Ember, Pitch Black and the light Paper. You can
+also choose any accent colour, square, rounded or soft corners, compact,
+comfortable or spacious density, text size and font. Changes preview
+live, and Cancel puts the old look back.
 
 **The ⋯ menu** on a selected game opens its prefix, runs winecfg or
 winetricks against it, and backs up saves or opens the backups at that
