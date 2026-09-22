@@ -2,20 +2,39 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from launcher.domain.library_filter import (
+    Availability,
+    LibraryFilter,
+    PlayState,
+    PrefixKind,
+)
 from launcher.domain.models import (
     Game,
     SortOrder,
@@ -41,6 +60,33 @@ def _running_dot(colour: str) -> QIcon:
     return QIcon(pixmap)
 
 
+def letter_tile(name: str, size: QSize, dpr: float = 1.0) -> QPixmap:
+    """A rounded tile with a game's initial, for games without art.
+
+    The hue comes from the name, so a game keeps its colour.
+    """
+    pixmap = QPixmap(round(size.width() * dpr), round(size.height() * dpr))
+    pixmap.setDevicePixelRatio(dpr)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    hue = sum(map(ord, name)) * 37 % 360
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor.fromHsl(hue, 90, 70))
+    painter.drawRoundedRect(0, 0, size.width(), size.height(), 6, 6)
+    font = painter.font()
+    font.setBold(True)
+    font.setPixelSize(round(size.height() * 0.46))
+    painter.setFont(font)
+    painter.setPen(QColor.fromHsl(hue, 160, 210))
+    initial = next((c for c in name if c.isalnum()), "?").upper()
+    painter.drawText(
+        0, 0, size.width(), size.height(), Qt.AlignmentFlag.AlignCenter, initial
+    )
+    painter.end()
+    return pixmap
+
+
 class LibrarySidebar(QWidget):
     """Search, favourites filter and the list of games."""
 
@@ -49,9 +95,11 @@ class LibrarySidebar(QWidget):
     launch_requested = Signal(str)
     add_requested = Signal()
     import_requested = Signal()
-    filters_changed = Signal()
+    #: The LibraryFilter the user asked for.
+    filter_changed = Signal(object)
     #: A SortOrder value.
     sort_changed = Signal(str)
+    favorites_first_changed = Signal(bool)
 
     def __init__(
         self, artwork: ArtworkService, parent: QWidget | None = None
@@ -61,6 +109,7 @@ class LibrarySidebar(QWidget):
         self.setObjectName("sidebar")
         self._games: list[Game] = []
         self._running: set[str] = set()
+        self._filter = LibraryFilter()
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -68,20 +117,29 @@ class LibrarySidebar(QWidget):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
+        search_row = QHBoxLayout()
+        search_row.setSpacing(6)
         self._search = QLineEdit()
         self._search.setObjectName("searchEdit")
-        self._search.setPlaceholderText("Search games…")
+        self._search.setPlaceholderText("Search games\u2026")
         self._search.setClearButtonEnabled(True)
-        self._search.textChanged.connect(self.filters_changed)
-        layout.addWidget(self._search)
+        self._search.textChanged.connect(
+            lambda text: self._emit_filter(self._filter.with_(text=text.strip()))
+        )
+        search_row.addWidget(self._search, stretch=1)
 
-        filter_row = QHBoxLayout()
-        filter_row.setSpacing(6)
-        self._fav_filter = QCheckBox("Favorites only")
-        self._fav_filter.toggled.connect(self.filters_changed)
-        filter_row.addWidget(self._fav_filter)
-        filter_row.addStretch()
+        self._filter_btn = QToolButton()
+        self._filter_btn.setObjectName("filterButton")
+        self._filter_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._filter_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self._filter_menu = QMenu(self._filter_btn)
+        self._filter_menu.aboutToShow.connect(self._build_filter_menu)
+        self._filter_btn.setMenu(self._filter_menu)
+        search_row.addWidget(self._filter_btn)
+        layout.addLayout(search_row)
 
+        sort_row = QHBoxLayout()
+        sort_row.setSpacing(6)
         self._sort_combo = QComboBox()
         self._sort_combo.setObjectName("sortCombo")
         for order in SortOrder:
@@ -90,8 +148,16 @@ class LibrarySidebar(QWidget):
         self._sort_combo.currentIndexChanged.connect(
             lambda _: self.sort_changed.emit(self._sort_combo.currentData())
         )
-        filter_row.addWidget(self._sort_combo)
-        layout.addLayout(filter_row)
+        sort_row.addWidget(self._sort_combo, stretch=1)
+
+        self._fav_first = QToolButton()
+        self._fav_first.setObjectName("favFirstButton")
+        self._fav_first.setText("\u2605 first")
+        self._fav_first.setCheckable(True)
+        self._fav_first.setToolTip("Keep favourites at the top")
+        self._fav_first.toggled.connect(self.favorites_first_changed)
+        sort_row.addWidget(self._fav_first)
+        layout.addLayout(sort_row)
 
         self._list = QListWidget()
         self._list.setObjectName("gameList")
@@ -110,6 +176,14 @@ class LibrarySidebar(QWidget):
             shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
             shortcut.activated.connect(self._launch_current)
         layout.addWidget(self._list, stretch=1)
+
+        self._count_label = QLabel()
+        self._count_label.setObjectName("hintLabel")
+        self._count_label.setTextFormat(Qt.TextFormat.RichText)
+        self._count_label.linkActivated.connect(
+            lambda _: self._emit_filter(self._filter.cleared())
+        )
+        layout.addWidget(self._count_label)
 
         button_row = QHBoxLayout()
         button_row.setSpacing(6)
@@ -133,22 +207,97 @@ class LibrarySidebar(QWidget):
             self._sort_combo.setCurrentIndex(index)
             self._sort_combo.blockSignals(False)
 
+    def set_favorites_first(self, enabled: bool) -> None:
+        self._fav_first.blockSignals(True)
+        self._fav_first.setChecked(enabled)
+        self._fav_first.blockSignals(False)
+
+    # -- filters -------------------------------------------------------
+
+    def set_filter(self, library_filter: LibraryFilter) -> None:
+        """Show the active filter without re-emitting it."""
+        self._filter = library_filter
+        if self._search.text().strip() != library_filter.text:
+            self._search.blockSignals(True)
+            self._search.setText(library_filter.text)
+            self._search.blockSignals(False)
+        count = library_filter.active_count
+        self._filter_btn.setText(f"Filters \u00b7 {count}" if count else "Filters")
+        self._filter_btn.setProperty("active", "true" if count else "false")
+        style = self._filter_btn.style()
+        style.unpolish(self._filter_btn)
+        style.polish(self._filter_btn)
+
+    def set_counts(self, shown: int, total: int) -> None:
+        """'12 of 40 games', with a way out when filters hide some."""
+        if self._filter.is_default or shown == total:
+            self._count_label.setText(f"{total} game{'s' if total != 1 else ''}")
+            return
+        self._count_label.setText(
+            f"{shown} of {total} games shown \u00b7 <a href='clear'>Clear filters</a>"
+        )
+
+    def _emit_filter(self, library_filter: LibraryFilter) -> None:
+        if library_filter != self._filter:
+            self._filter = library_filter
+            self.filter_changed.emit(library_filter)
+
+    def _build_filter_menu(self) -> None:
+        """Rebuilt on every open, so it always reflects the filter."""
+        menu = self._filter_menu
+        menu.clear()
+        current = self._filter
+
+        def toggle(label: str, field: str) -> None:
+            action = QAction(label, menu)
+            action.setCheckable(True)
+            action.setChecked(bool(getattr(current, field)))
+            action.toggled.connect(
+                lambda on: self._emit_filter(self._filter.with_(**{field: on}))
+            )
+            menu.addAction(action)
+
+        def choice(title: str, field: str, values: type[Enum]) -> None:
+            menu.addSection(title)
+            group = QActionGroup(menu)
+            group.setExclusive(True)
+            for value in values:
+                action = QAction(value.label, menu)  # type: ignore[attr-defined]
+                action.setCheckable(True)
+                action.setChecked(getattr(current, field) is value)
+                action.triggered.connect(
+                    lambda _=False, v=value: self._emit_filter(
+                        self._filter.with_(**{field: v})
+                    )
+                )
+                group.addAction(action)
+                menu.addAction(action)
+
+        menu.addSection("Show only")
+        toggle("\u2605  Favourites", "favorites")
+        toggle("\u25cf  Running now", "running")
+        toggle("Missing a cover", "missing_art")
+        choice("Installed", "availability", Availability)
+        choice("History", "played", PlayState)
+        choice("Wine prefix", "prefix", PrefixKind)
+        menu.addSeparator()
+        clear = menu.addAction("Clear filters")
+        clear.setEnabled(current.active_count > 0)
+        clear.triggered.connect(lambda: self._emit_filter(self._filter.cleared()))
+
     # -- state ---------------------------------------------------------
 
     def search_text(self) -> str:
         return self._search.text().strip()
 
     def clear_filters(self) -> None:
-        """Drop the search text and favourites filter."""
-        self._search.clear()
-        self._fav_filter.setChecked(False)
+        """Drop the search text and every filter."""
+        self._emit_filter(LibraryFilter())
+        self.set_filter(LibraryFilter())
 
     def focus_search(self) -> None:
         self._search.setFocus(Qt.FocusReason.ShortcutFocusReason)
         self._search.selectAll()
-
-    def favorites_only(self) -> bool:
-        return self._fav_filter.isChecked()
 
     def set_games(self, games: list[Game], *, select: str | None = None) -> None:
         """Repopulate the list, keeping the selection where possible."""
@@ -161,9 +310,7 @@ class LibrarySidebar(QWidget):
             item = QListWidgetItem(game.name)
             item.setData(Qt.ItemDataRole.UserRole, game.name)
             item.setSizeHint(QSize(0, 46))
-            icon = self._row_icon(game.name)
-            if icon is not None:
-                item.setIcon(QIcon(icon))
+            item.setIcon(QIcon(self._row_icon(game.name)))
             self._decorate(item, game)
             self._list.addItem(item)
         self._list.blockSignals(False)
@@ -175,12 +322,14 @@ class LibrarySidebar(QWidget):
         else:
             self.selection_changed.emit("")
 
-    def _row_icon(self, name: str) -> QPixmap | None:
-        """The game's icon, or a square crop of its cover."""
+    def _row_icon(self, name: str) -> QPixmap:
+        """The game's icon, a square crop of its cover, or its initial."""
         dpr = self.devicePixelRatioF()
-        return self._artwork.pixmap(
-            name, ICON.name, _ICON_SIZE, dpr=dpr
-        ) or self._artwork.pixmap(name, GRID.name, _ICON_SIZE, expand=True, dpr=dpr)
+        return (
+            self._artwork.pixmap(name, ICON.name, _ICON_SIZE, dpr=dpr)
+            or self._artwork.pixmap(name, GRID.name, _ICON_SIZE, expand=True, dpr=dpr)
+            or letter_tile(name, _ICON_SIZE, dpr)
+        )
 
     def _decorate(self, item: QListWidgetItem, game: Game) -> None:
         marks = []
@@ -228,28 +377,6 @@ class LibrarySidebar(QWidget):
             if game is not None:
                 self._decorate(item, game)
             return
-
-    def apply_filter(self, text: str, favorites_only: bool, favorites: set[str]) -> None:
-        """Hide rows that do not match, and keep a visible row selected."""
-        needle = text.lower()
-        current_hidden = False
-        for row in range(self._list.count()):
-            item = self._list.item(row)
-            name = str(item.data(Qt.ItemDataRole.UserRole))
-            matches = needle in name.lower()
-            if favorites_only and name not in favorites:
-                matches = False
-            item.setHidden(not matches)
-            if not matches and row == self._list.currentRow():
-                current_hidden = True
-
-        if current_hidden:
-            for row in range(self._list.count()):
-                if not self._list.item(row).isHidden():
-                    self._list.setCurrentRow(row)
-                    return
-            self._list.setCurrentRow(-1)
-            self.selection_changed.emit("")
 
     def selected_game(self) -> str | None:
         item = self._list.currentItem()

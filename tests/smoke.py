@@ -771,6 +771,96 @@ def controller_filters_sorts_and_reports_errors() -> None:
         assert errors and errors[0][0] == "Add Game"
 
 
+def _games_for_sorting():
+    from launcher.domain.models import Game, GameConfig, GameStats
+
+    def game(name, *, played=0, last=None, fav=False, launches=0, prefix="", exists=True):
+        return Game(
+            config=GameConfig(name=name, prefix=prefix),
+            conf_path=Path(f"/g/{name}.conf"),
+            stats=GameStats(
+                favorite=fav,
+                playtime_seconds=played,
+                last_played=last,
+                launch_count=launches,
+            ),
+            executable_exists=exists,
+        )
+
+    now = datetime(2026, 9, 1)
+    return [
+        game("beta", played=50, last=now - timedelta(days=3), launches=9),
+        game("Alpha", played=900, last=now - timedelta(days=9), fav=True, launches=2),
+        game("gamma", prefix="prefixes/gamma", exists=False),
+        game("Delta", played=10, last=now, fav=True, launches=1),
+    ]
+
+
+@test
+def every_sort_order_does_what_it_says() -> None:
+    from launcher.domain.models import SortOrder, sort_games
+
+    games = _games_for_sorting()
+
+    def names(order, **kw):
+        return [g.name for g in sort_games(games, order, **kw)]
+
+    assert names(SortOrder.NAME) == ["Alpha", "beta", "Delta", "gamma"]
+    assert names(SortOrder.NAME_DESC) == ["gamma", "Delta", "beta", "Alpha"]
+    assert names(SortOrder.LAST_PLAYED) == ["Delta", "beta", "Alpha", "gamma"]
+    assert names(SortOrder.PLAYTIME) == ["Alpha", "beta", "Delta", "gamma"]
+    assert names(SortOrder.LEAST_PLAYED) == ["gamma", "Delta", "beta", "Alpha"]
+    assert names(SortOrder.MOST_LAUNCHED) == ["beta", "Alpha", "Delta", "gamma"]
+    assert names(SortOrder.NAME_DESC, favorites_first=True) == [
+        "Delta", "Alpha", "gamma", "beta"
+    ]
+
+
+@test
+def library_filters_combine_and_round_trip() -> None:
+    from launcher.domain.library_filter import (
+        Availability,
+        LibraryFilter,
+        PlayState,
+        PrefixKind,
+    )
+
+    games = _games_for_sorting()
+
+    def names(f, **kw):
+        return sorted(g.name for g in games if f.matches(g, **kw))
+
+    assert names(LibraryFilter()) == ["Alpha", "Delta", "beta", "gamma"]
+    assert names(LibraryFilter(played=PlayState.UNPLAYED)) == ["gamma"]
+    assert names(LibraryFilter(availability=Availability.MISSING)) == ["gamma"]
+    assert names(LibraryFilter(prefix=PrefixKind.OWN)) == ["gamma"]
+    both = LibraryFilter(favorites=True, played=PlayState.PLAYED, text="al")
+    assert names(both) == ["Alpha"]
+    assert both.active_count == 2
+    assert names(LibraryFilter(running=True), running={"beta"}) == ["beta"]
+    assert names(
+        LibraryFilter(missing_art=True), has_art=lambda n: n != "Delta"
+    ) == ["Delta"]
+
+    stored = LibraryFilter.from_json(both.to_json())
+    assert stored == both.with_(text=""), "search text is not persisted"
+    assert LibraryFilter.from_json({"played": "bogus"}) == LibraryFilter()
+    assert both.cleared() == LibraryFilter(text="al")
+
+
+@test
+def the_old_hide_missing_setting_becomes_a_filter() -> None:
+    from launcher.app.library_controller import LibraryController
+    from launcher.domain.library_filter import Availability
+
+    with sandbox() as ctx:
+        ctx.settings.set("hide_missing", True)
+        lib = LibraryController(ctx)
+        assert lib.filter.availability is Availability.INSTALLED
+        assert not ctx.settings.get_bool("hide_missing")
+        assert LibraryController(ctx).filter.availability is Availability.INSTALLED
+
+
 @test
 def renaming_through_the_controller_cannot_duplicate_a_game() -> None:
     """The caller naturally mutates the game's own config; that must work."""

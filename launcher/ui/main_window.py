@@ -164,8 +164,9 @@ class MainWindow(QMainWindow):
         side.launch_requested.connect(self._launch_game)
         side.add_requested.connect(self._add_game)
         side.import_requested.connect(self._import_games)
-        side.filters_changed.connect(self._on_filters_changed)
+        side.filter_changed.connect(self._lib.set_filter)
         side.sort_changed.connect(self._on_sort_changed)
+        side.favorites_first_changed.connect(self._lib.set_favorites_first)
 
         detail = self._detail
         detail.play_requested.connect(self._launch_game)
@@ -216,8 +217,11 @@ class MainWindow(QMainWindow):
     def _render_library(self) -> None:
         visible = self._lib.visible_games()
         selected = self._sidebar.selected_game()
+        self._sidebar.set_filter(self._lib.filter)
         self._sidebar.set_games(visible, select=selected)
+        self._sidebar.set_counts(len(visible), len(self._lib.games))
         self._sidebar.set_sort_order(self._lib.sort_order.value)
+        self._sidebar.set_favorites_first(self._lib.favorites_first)
         for name in self._ctx.processes.running_games:
             self._sidebar.set_running(name, True)
         if not visible:
@@ -255,10 +259,6 @@ class MainWindow(QMainWindow):
         return self._sidebar.selected_game()
 
     # -- filters and views ---------------------------------------------
-
-    def _on_filters_changed(self) -> None:
-        self._lib.set_search(self._sidebar.search_text())
-        self._lib.set_favorites_only(self._sidebar.favorites_only())
 
     def _on_sort_changed(self, value: str) -> None:
         with contextlib.suppress(ValueError):
@@ -475,11 +475,7 @@ class MainWindow(QMainWindow):
         self._lib.reload()
 
     def _open_settings(self) -> None:
-        before = self._ctx.settings.get_bool("hide_missing")
         SettingsDialog(self._ctx, parent=self).exec()
-        after = self._ctx.settings.get_bool("hide_missing")
-        if before != after:
-            self._lib.set_hide_missing(after)
 
     # -- process signals -----------------------------------------------
 

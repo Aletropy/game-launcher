@@ -408,6 +408,30 @@ QScrollArea#shelf, QScrollArea#shelf > QWidget > QWidget {
     background-color: transparent;
 }
 
+QToolButton#filterButton, QToolButton#favFirstButton {
+    background-color: $raised;
+    color: $fg;
+    border: 1px solid $border;
+    border-radius: ${radius}px;
+    padding: 5px 10px;
+    font-size: ${font_sm}px;
+}
+
+QToolButton#filterButton:hover, QToolButton#favFirstButton:hover {
+    border-color: $border_hover;
+}
+
+QToolButton#filterButton[active="true"], QToolButton#favFirstButton:checked {
+    color: $on_accent;
+    background-color: $accent;
+    border-color: $accent;
+}
+
+QToolButton#filterButton::menu-indicator {
+    image: none;
+    width: 0;
+}
+
 QToolButton#moreButton {
     background-color: $raised;
     color: $fg;

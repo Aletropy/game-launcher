@@ -207,8 +207,6 @@ class SettingsDialog(QDialog):
             layout.addWidget(box)
             self._prompt_boxes[key] = box
 
-        self._hide_missing = QCheckBox("Hide games whose executable is missing")
-        layout.addWidget(self._hide_missing)
         layout.addStretch()
         return page
 
@@ -220,7 +218,6 @@ class SettingsDialog(QDialog):
         self._log_lines.setValue(settings.get_int("log_max_lines"))
         self._api_key.setText(settings.get_str("sgdb_api_key"))
         self._fetch_on_add.setChecked(settings.get_bool("fetch_artwork_on_add"))
-        self._hide_missing.setChecked(settings.get_bool("hide_missing"))
         self._share_default.setChecked(settings.get_bool("share_saves_by_default"))
         self._backup_auto.setChecked(settings.get_bool("backup_auto"))
         self._backup_interval.setValue(settings.get_int("backup_interval_minutes"))
@@ -238,7 +235,6 @@ class SettingsDialog(QDialog):
             "log_max_lines": self._log_lines.value(),
             "sgdb_api_key": self._api_key.text().strip(),
             "fetch_artwork_on_add": self._fetch_on_add.isChecked(),
-            "hide_missing": self._hide_missing.isChecked(),
             "share_saves_by_default": self._share_default.isChecked(),
             "backup_auto": self._backup_auto.isChecked(),
             "backup_interval_minutes": self._backup_interval.value(),

@@ -19,6 +19,9 @@ DEFAULTS: dict[str, Any] = {
     "sort_order": "name",
     "view_mode": "list",
     "hide_missing": False,
+    "favorites_first": False,
+    # A LibraryFilter, as JSON.
+    "library_filter": {},
     # Behaviour.
     "confirm_remove": True,
     "close_to_tray": False,

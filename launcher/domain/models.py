@@ -94,61 +94,57 @@ class SortOrder(Enum):
     """How the library is ordered."""
 
     NAME = "name"
+    NAME_DESC = "name_desc"
     LAST_PLAYED = "last_played"
     PLAYTIME = "playtime"
+    LEAST_PLAYED = "playtime_asc"
     RECENTLY_ADDED = "added"
+    MOST_LAUNCHED = "launches"
 
     @property
     def label(self) -> str:
         return {
-            SortOrder.NAME: "Name",
-            SortOrder.LAST_PLAYED: "Recently played",
+            SortOrder.NAME: "Name (A\u2013Z)",
+            SortOrder.NAME_DESC: "Name (Z\u2013A)",
+            SortOrder.LAST_PLAYED: "Last played",
             SortOrder.PLAYTIME: "Most played",
+            SortOrder.LEAST_PLAYED: "Least played",
             SortOrder.RECENTLY_ADDED: "Recently added",
+            SortOrder.MOST_LAUNCHED: "Most launched",
         }[self]
 
 
-#: Sorts that put the most interesting entry first.
-_DESCENDING = {SortOrder.LAST_PLAYED, SortOrder.PLAYTIME, SortOrder.RECENTLY_ADDED}
-
-
-def sort_games(games: list[Game], order: SortOrder) -> list[Game]:
+def sort_games(
+    games: list[Game], order: SortOrder, *, favorites_first: bool = False
+) -> list[Game]:
     """Return the games in the requested order.
 
-    Games with no value for the chosen key (never played, no recorded add
-    date) sort last rather than jumbling in with the zeros.
+    Names break ties, always A\u2013Z. Games with no value for a "most" or
+    "last" key (never played, no recorded add date) sort after the rest
+    rather than jumbling in with the zeros.
     """
+    by_name = sorted(games, key=lambda g: g.name.casefold())
     epoch = datetime.min
 
-    def key(game: Game):
-        if order is SortOrder.NAME:
-            return game.name.casefold()
-        if order is SortOrder.LAST_PLAYED:
-            return (game.stats.last_played or epoch, game.name.casefold())
-        if order is SortOrder.PLAYTIME:
-            return (game.stats.playtime_seconds, game.name.casefold())
-        return (game.stats.added or epoch, game.name.casefold())
-
     if order is SortOrder.NAME:
-        return sorted(games, key=key)
+        ordered = by_name
+    elif order is SortOrder.NAME_DESC:
+        ordered = sorted(games, key=lambda g: g.name.casefold(), reverse=True)
+    elif order is SortOrder.LAST_PLAYED:
+        ordered = sorted(by_name, key=lambda g: g.stats.last_played or epoch, reverse=True)
+    elif order is SortOrder.PLAYTIME:
+        ordered = sorted(by_name, key=lambda g: g.stats.playtime_seconds, reverse=True)
+    elif order is SortOrder.LEAST_PLAYED:
+        ordered = sorted(by_name, key=lambda g: g.stats.playtime_seconds)
+    elif order is SortOrder.MOST_LAUNCHED:
+        ordered = sorted(by_name, key=lambda g: g.stats.launch_count, reverse=True)
+    else:
+        ordered = sorted(by_name, key=lambda g: g.stats.added or epoch, reverse=True)
 
-    # Reverse the primary key but keep names ascending as the tie-break.
-    return sorted(
-        sorted(games, key=lambda g: g.name.casefold()),
-        key=lambda g: key(g)[0],
-        reverse=order in _DESCENDING,
-    )
-
-
-def matches_filter(
-    game: Game, text: str, favorites_only: bool, hide_missing: bool = False
-) -> bool:
-    """Whether a game survives the current library filters."""
-    if favorites_only and not game.stats.favorite:
-        return False
-    if hide_missing and not game.executable_exists:
-        return False
-    return text.casefold() in game.name.casefold()
+    if favorites_first:
+        # Stable, so each group keeps the chosen order.
+        ordered = sorted(ordered, key=lambda g: not g.stats.favorite)
+    return ordered
 
 
 def format_playtime(seconds: int) -> str:

@@ -14,13 +14,14 @@ from PySide6.QtCore import QObject, Signal
 
 from launcher.app.context import AppContext
 from launcher.app.save_keeper import SaveKeeper
+from launcher.domain.library_filter import Availability, LibraryFilter
 from launcher.domain.models import (
     Game,
     GameConfig,
     SortOrder,
-    matches_filter,
     sort_games,
 )
+from launcher.services.artwork import GRID
 
 
 class LibraryController(QObject):
@@ -39,12 +40,15 @@ class LibraryController(QObject):
         super().__init__(parent)
         self._ctx = context
         self._games: list[Game] = []
-        self._search = ""
-        self._favorites_only = False
 
         settings = context.settings
         self._sort = _sort_from_settings(settings.get_str("sort_order"))
-        self._hide_missing = settings.get_bool("hide_missing")
+        self._favorites_first = settings.get_bool("favorites_first")
+        self._filter = LibraryFilter.from_json(settings.get("library_filter"))
+        if settings.get_bool("hide_missing"):
+            # The old "hide missing" preference is now a filter.
+            self._filter = self._filter.with_(availability=Availability.INSTALLED)
+            settings.update({"hide_missing": False, "library_filter": self._filter.to_json()})
 
         self.saves = SaveKeeper(context, self)
         self.saves.status.connect(self.status)
@@ -54,6 +58,7 @@ class LibraryController(QObject):
         # counted whether or not any view is listening.
         context.processes.session_recorded.connect(self._on_session_recorded)
         context.processes.game_started.connect(self._on_game_started)
+        context.processes.game_finished.connect(self._on_game_finished)
 
     # -- data ----------------------------------------------------------
 
@@ -68,10 +73,16 @@ class LibraryController(QObject):
 
     def visible_games(self) -> list[Game]:
         """The games passing the current search and filters."""
+        running = set(self._ctx.processes.running_games)
+        artwork = self._ctx.artwork
         return [
             g
             for g in self._games
-            if matches_filter(g, self._search, self._favorites_only, self._hide_missing)
+            if self._filter.matches(
+                g,
+                running=running,
+                has_art=lambda name: artwork.path_for(name, GRID.name) is not None,
+            )
         ]
 
     def game(self, name: str) -> Game | None:
@@ -79,8 +90,11 @@ class LibraryController(QObject):
 
     def reload(self) -> None:
         """Re-read the library from disk."""
-        self._games = sort_games(self._ctx.games.list_games(), self._sort)
+        self._games = self._sorted(self._ctx.games.list_games())
         self.library_changed.emit()
+
+    def _sorted(self, games: list[Game]) -> list[Game]:
+        return sort_games(games, self._sort, favorites_first=self._favorites_first)
 
     def refresh_game(self, name: str) -> None:
         """Re-read one game, leaving the rest alone."""
@@ -98,33 +112,46 @@ class LibraryController(QObject):
     # -- filters -------------------------------------------------------
 
     @property
+    def filter(self) -> LibraryFilter:
+        return self._filter
+
+    def set_filter(self, library_filter: LibraryFilter) -> None:
+        if library_filter == self._filter:
+            return
+        stored = self._filter.to_json()
+        self._filter = library_filter
+        if library_filter.to_json() != stored:
+            self._ctx.settings.set("library_filter", library_filter.to_json())
+        self.library_changed.emit()
+
+    def clear_filters(self) -> None:
+        self.set_filter(self._filter.cleared())
+
+    @property
     def search_text(self) -> str:
-        return self._search
+        return self._filter.text
 
     def set_search(self, text: str) -> None:
-        text = text.strip()
-        if text != self._search:
-            self._search = text
-            self.library_changed.emit()
+        self.set_filter(self._filter.with_(text=text.strip()))
 
     @property
     def favorites_only(self) -> bool:
-        return self._favorites_only
+        return self._filter.favorites
 
     def set_favorites_only(self, enabled: bool) -> None:
-        if enabled != self._favorites_only:
-            self._favorites_only = enabled
-            self.library_changed.emit()
+        self.set_filter(self._filter.with_(favorites=enabled))
 
     @property
-    def hide_missing(self) -> bool:
-        return self._hide_missing
+    def favorites_first(self) -> bool:
+        return self._favorites_first
 
-    def set_hide_missing(self, enabled: bool) -> None:
-        if enabled != self._hide_missing:
-            self._hide_missing = enabled
-            self._ctx.settings.set("hide_missing", enabled)
-            self.library_changed.emit()
+    def set_favorites_first(self, enabled: bool) -> None:
+        if enabled == self._favorites_first:
+            return
+        self._favorites_first = enabled
+        self._ctx.settings.set("favorites_first", enabled)
+        self._games = self._sorted(self._games)
+        self.library_changed.emit()
 
     @property
     def sort_order(self) -> SortOrder:
@@ -135,7 +162,7 @@ class LibraryController(QObject):
             return
         self._sort = order
         self._ctx.settings.set("sort_order", order.value)
-        self._games = sort_games(self._games, order)
+        self._games = self._sorted(self._games)
         self.library_changed.emit()
 
     # -- mutations -----------------------------------------------------
@@ -193,8 +220,9 @@ class LibraryController(QObject):
     def toggle_favorite(self, name: str) -> bool:
         new_state = self._ctx.state.toggle_favorite(name)
         self.refresh_game(name)
-        # Favourites can change what the filter admits.
-        if self._favorites_only:
+        # Favourites can change what the filter admits, and the order.
+        if self._filter.favorites or self._favorites_first:
+            self._games = self._sorted(self._games)
             self.library_changed.emit()
         return new_state
 
@@ -232,6 +260,12 @@ class LibraryController(QObject):
     def _on_game_started(self, name: str) -> None:
         self._ctx.state.record_launch(name)
         self.refresh_game(name)
+        if self._filter.running:
+            self.library_changed.emit()
+
+    def _on_game_finished(self, name: str, _exit_code: int) -> None:
+        if self._filter.running:
+            self.library_changed.emit()
 
     def _on_session_recorded(self, name: str, seconds: int) -> None:
         self._ctx.state.add_playtime(name, seconds)
