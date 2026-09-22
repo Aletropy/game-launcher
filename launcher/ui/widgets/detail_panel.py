@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -34,7 +33,7 @@ from launcher.ui.widgets.elide import ElidingLabel
 from launcher.ui.widgets.hero_banner import HeroBanner
 from launcher.ui.widgets.log_view import LogView
 
-_INFO_ROWS = ("Played", "Prefix", "Saves", "Proton", "App ID", "Executable")
+_INFO_ROWS = ("Prefix", "Saves", "Proton", "App ID", "Executable")
 
 
 class GameDetailPanel(QWidget):
@@ -91,14 +90,6 @@ class GameDetailPanel(QWidget):
         layout.setContentsMargins(24, 16, 24, 20)
         layout.setSpacing(14)
         scroll.setWidget(body)
-
-        self._title = ElidingLabel("")
-        self._title.setObjectName("detailTitle")
-        self._title.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self._title.setMinimumHeight(30)
-        layout.addWidget(self._title)
 
         layout.addLayout(self._build_actions())
 
@@ -237,8 +228,12 @@ class GameDetailPanel(QWidget):
             self._banner.set_game(None)
             return
 
-        self._banner.set_game(game.name, game.name)
-        self._title.setText(game.name)
+        # The banner carries the heading: the game's logo when there is
+        # one, otherwise its name, with how much it has been played.
+        played = format_playtime(game.playtime_seconds)
+        when = format_last_played(game.last_played)
+        subtitle = "  \u00b7  ".join(p for p in (played, when) if p)
+        self._banner.set_game(game.name, game.name, subtitle)
 
         self._fav_btn.setText("★" if game.is_favorite else "☆")
         self._fav_btn.setProperty(
@@ -246,7 +241,6 @@ class GameDetailPanel(QWidget):
         )
         restyle(self._fav_btn)
 
-        self._set_played_row(game)
         self._info_values["Prefix"].setText(
             prefixes.describe(game.prefix, self._paths)
         )
@@ -270,16 +264,6 @@ class GameDetailPanel(QWidget):
 
         self._play_btn.setEnabled(game.executable_exists and not self._running)
 
-    def _set_played_row(self, game: Game) -> None:
-        """Summarise playtime, hiding the row for a game never played."""
-        playtime = format_playtime(game.playtime_seconds)
-        when = format_last_played(game.last_played)
-        text = f"{playtime}  ·  {when}" if playtime and when else (playtime or when)
-        visible = bool(text)
-        self._info_values["Played"].setText(text)
-        self._info_values["Played"].setVisible(visible)
-        self._info_labels["Played"].setVisible(visible)
-
     def _saves_summary(self, game: Game) -> str:
         """Whether this game's prefix uses the shared save store."""
         if self._save_store is None:
@@ -301,6 +285,10 @@ class GameDetailPanel(QWidget):
         self._log_section.set_suffix("   ● running" if running else "")
         if running:
             self._log_section.set_expanded(True)
+
+    def refresh_artwork(self) -> None:
+        """Redraw the banner after its artwork changed."""
+        self._banner.refresh()
 
     def attach_log(self, doc: QTextDocument | None) -> None:
         self._log.attach(doc)

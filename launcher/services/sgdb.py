@@ -19,6 +19,16 @@ class SGDBError(Exception):
     """Error from the SteamGridDB API."""
 
 
+#: Art type -> SteamGridDB endpoint. The art type names match the
+#: artwork service's specs, so a download lands in the right folder.
+ENDPOINTS: dict[str, str] = {
+    "grid": "grids",
+    "hero": "heroes",
+    "icon": "icons",
+    "logo": "logos",
+}
+
+
 def _api_get(endpoint: str, api_key: str, params: dict | None = None) -> dict:
     """Make an authenticated GET request to the SGDB API."""
     url = f"{_BASE_URL}{endpoint}"
@@ -74,8 +84,7 @@ class SgdbClient:
         matches = self.search(query)
         if not matches:
             raise SGDBError("No games found.")
-        game_id = matches[0]["id"]
-        return self.heroes(game_id) if art_type == "hero" else self.grids(game_id)
+        return get_artwork(matches[0]["id"], art_type, self.api_key)
 
     def verify_key(self, key: str) -> str:
         """Check a key works. Returns a message describing the result."""
@@ -92,6 +101,15 @@ class SgdbClient:
 def search_games(query: str, api_key: str) -> list[dict]:
     """Search for games by name. Returns list of {id, name, types, verified}."""
     result = _api_get(f"/search/autocomplete/{urllib.parse.quote(query)}", api_key)
+    return result.get("data", [])
+
+
+def get_artwork(game_id: int, art_type: str, api_key: str) -> list[dict]:
+    """Fetch artwork of one type ("grid", "hero", "icon", "logo")."""
+    endpoint = ENDPOINTS.get(art_type)
+    if endpoint is None:
+        raise SGDBError(f"Unknown artwork type: {art_type}")
+    result = _api_get(f"/{endpoint}/game/{game_id}", api_key)
     return result.get("data", [])
 
 

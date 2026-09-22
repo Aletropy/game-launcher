@@ -51,6 +51,9 @@ class AppContext:
         state.import_legacy_favorites(paths.legacy_favorites_file)
 
         artwork = ArtworkService(paths)
+        # Earlier versions saved covers into the banner folder; move them
+        # to where they belong before anything draws them.
+        artwork.reclassify_misfiled()
         return cls(
             paths=paths,
             settings=settings,

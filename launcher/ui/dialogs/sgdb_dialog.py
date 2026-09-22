@@ -22,11 +22,9 @@ from PySide6.QtWidgets import (
 )
 
 from launcher.app.context import AppContext
-from launcher.services.artwork import GRID, HERO
 from launcher.services.sgdb import (
     download_bytes,
-    get_grids,
-    get_heroes,
+    get_artwork,
     search_games,
 )
 from launcher.services.tasks import TaskGroup
@@ -49,15 +47,23 @@ class _DownloadResult:
     data: bytes
 
 
+#: Display label -> artwork type. Explicit, because deriving the type
+#: from the label is how "Heroes".rstrip("s") became "heroe" and the
+#: banner search silently returned covers.
+ART_TYPES: dict[str, str] = {
+    "Covers": "grid",
+    "Banners": "hero",
+    "Logos": "logo",
+    "Icons": "icon",
+}
+
+
 def _fetch_artwork_list(query: str, api_key: str, art_type: str) -> _SearchResult:
-    """Look a game up and fetch its artwork list. Runs off the GUI thread."""
+    """Look a game up and fetch its artwork of one type. Off the GUI thread."""
     games = search_games(query, api_key)
     if not games:
         raise ValueError("No games found.")
-    game_id = games[0]["id"]
-    items = get_heroes(game_id, api_key) if art_type == "hero" else get_grids(
-        game_id, api_key
-    )
+    items = get_artwork(games[0]["id"], art_type, api_key)
     return _SearchResult(items=items, art_type=art_type)
 
 
@@ -179,8 +185,14 @@ class SGDBDialog(QDialog):
         search_row.addWidget(self._search_edit)
 
         self._type_combo = QComboBox()
-        self._type_combo.addItems(["Heroes", "Grids"])
-        self._type_combo.setFixedWidth(100)
+        self._type_combo.addItems(list(ART_TYPES))
+        self._type_combo.setFixedWidth(110)
+        self._type_combo.setToolTip(
+            "Covers: portrait art for the sidebar and banner\n"
+            "Banners: wide art that fills the banner\n"
+            "Logos: transparent title drawn on the banner\n"
+            "Icons: square art for the game list"
+        )
         search_row.addWidget(self._type_combo)
 
         self._search_btn = QPushButton("Search")
@@ -234,7 +246,7 @@ class SGDBDialog(QDialog):
         query = self._search_edit.text().strip()
         if not query:
             return
-        art_type = self._type_combo.currentText().lower().rstrip("s")
+        art_type = ART_TYPES[self._type_combo.currentText()]
         self._search_btn.setEnabled(False)
         self._status_label.setText("Searching\u2026")
         self._clear_results()
@@ -313,7 +325,7 @@ class SGDBDialog(QDialog):
         if not game_name:
             warn(self, "Missing Name", "No game name available.")
             return
-        art = HERO.name if self._type_combo.currentText() == "Heroes" else GRID.name
+        art = ART_TYPES[self._type_combo.currentText()]
         self._download_btn.setEnabled(False)
         self._status_label.setText("Downloading\u2026")
         self._download_token = self._tasks.submit(
@@ -329,7 +341,16 @@ class SGDBDialog(QDialog):
             self._show_error(f"Could not save artwork: {e}")
             return
         self._download_btn.setEnabled(True)
-        self._status_label.setText("Artwork downloaded and applied!")
+        stored_as = path.parent.name
+        if stored_as != result.art:
+            # The image was the wrong shape for what was asked; it was
+            # filed by its real shape instead of being stretched to fit.
+            label = {v: k for k, v in ART_TYPES.items()}.get(stored_as, stored_as)
+            self._status_label.setText(
+                f"That image is shaped like {label.lower()}, so it was saved as one."
+            )
+        else:
+            self._status_label.setText("Artwork downloaded and applied!")
         self.artwork_downloaded.emit(path)
 
     def _clear_results(self) -> None:

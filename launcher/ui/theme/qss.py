@@ -379,6 +379,49 @@ QPushButton#viewToggle:checked {
     border-color: $accent;
 }
 
+QToolButton#moreButton {
+    background-color: $raised;
+    color: $fg;
+    border: 1px solid $border;
+    border-radius: ${radius}px;
+    padding: 0 10px;
+    font-size: ${font_lg}px;
+}
+
+QToolButton#moreButton:hover {
+    background-color: $border;
+    border-color: $border_hover;
+}
+
+QToolButton#moreButton::menu-indicator {
+    image: none;
+    width: 0;
+}
+
+QMenu {
+    background-color: $surface;
+    color: $fg;
+    border: 1px solid $border;
+    border-radius: ${radius}px;
+    padding: 4px;
+}
+
+QMenu::item {
+    padding: 6px 22px 6px 12px;
+    border-radius: ${radius_sm}px;
+}
+
+QMenu::item:selected {
+    background-color: $raised;
+    color: $fg_bright;
+}
+
+QMenu::separator {
+    height: 1px;
+    background: $border;
+    margin: 4px 6px;
+}
+
 QToolButton#sectionToggle {
     background: transparent;
     border: none;

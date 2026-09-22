@@ -6,13 +6,15 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QImageReader, QPixmap
 
 from launcher.data.paths import Paths
 from launcher.services.artwork.specs import (
     EXTENSIONS,
     GRID,
+    HERO,
     SPECS,
+    classify,
     encode,
     load_image,
     slug,
@@ -73,9 +75,16 @@ class ArtworkService:
     # -- writes --------------------------------------------------------
 
     def store(self, key: str, art: str, source: Path | bytes | QImage) -> Path:
-        """Scale, encode and save artwork, replacing any previous file."""
+        """Scale, encode and save artwork, replacing any previous file.
+
+        The image is filed by its real shape, not by what it was requested
+        as: a portrait cover handed in as a banner is stored as a cover.
+        The returned path's folder says which type it became.
+        """
+        image = load_image(source)
+        art = classify(image.width(), image.height(), art)
         spec = SPECS[art]
-        data, ext = encode(load_image(source), spec)
+        data, ext = encode(image, spec)
 
         directory = self.art_dir(art)
         directory.mkdir(parents=True, exist_ok=True)
@@ -130,6 +139,42 @@ class ArtworkService:
         self.invalidate(old_key)
         self.invalidate(new_key)
 
+    def reclassify_misfiled(self) -> list[tuple[Path, Path]]:
+        """Move artwork stored under the wrong type to where it belongs.
+
+        The SteamGridDB dialog used to search covers when asked for
+        banners ("Heroes".rstrip("s") is "heroe", never "hero") while
+        saving the results as banners. Those portraits are covers; left in
+        hero/ they get cropped to a thin strip and stretched. Reads only
+        the image header, so this is cheap to run at startup.
+        """
+        moved: list[tuple[Path, Path]] = []
+        for art in (HERO.name, GRID.name):
+            directory = self.art_dir(art)
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.iterdir()):
+                if path.suffix.lower() not in EXTENSIONS or not path.is_file():
+                    continue
+                size = QImageReader(str(path)).size()
+                real = classify(size.width(), size.height(), art)
+                if real == art:
+                    continue
+                target_dir = self.art_dir(real)
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target = target_dir / path.name
+                if any(
+                    (target_dir / f"{path.stem}{ext}").exists() for ext in EXTENSIONS
+                ):
+                    # The right slot is already filled; keep that one and
+                    # leave this where it is rather than overwrite.
+                    continue
+                path.replace(target)
+                moved.append((path, target))
+        if moved:
+            self.invalidate()
+        return moved
+
     # -- display -------------------------------------------------------
 
     def invalidate(self, key: str | None = None) -> None:
@@ -140,10 +185,28 @@ class ArtworkService:
         for cached in [k for k in self._cache if k[0] == key]:
             del self._cache[cached]
 
+    def image(self, key: str, art: str) -> QImage | None:
+        """The stored artwork at full resolution, for custom composition."""
+        source = self.path_for(key, art)
+        if source is None:
+            return None
+        image = QImage(str(source))
+        return None if image.isNull() else image
+
     def pixmap(
-        self, key: str, art: str, size: QSize, *, expand: bool = False
+        self,
+        key: str,
+        art: str,
+        size: QSize,
+        *,
+        expand: bool = False,
+        dpr: float = 1.0,
     ) -> QPixmap | None:
         """Return artwork scaled to a size, or None if there is none.
+
+        ``size`` is in logical pixels; the image is scaled to
+        size * dpr physical pixels and tagged with that ratio, so it stays
+        sharp on a scaled display instead of being stretched by Qt.
 
         GUI thread only, since it builds QPixmaps. Results are cached by
         source mtime, so rebuilding the library does not re-decode every
@@ -158,7 +221,9 @@ class ArtworkService:
         except OSError:
             return None
 
-        cache_key = (key, art, size.width(), size.height())
+        dpr = max(1.0, dpr)
+        physical = QSize(round(size.width() * dpr), round(size.height() * dpr))
+        cache_key = (key, art, physical.width(), physical.height())
         hit = self._cache.get(cache_key)
         if hit is not None and hit[1] == mtime:
             self._cache.move_to_end(cache_key)
@@ -172,7 +237,8 @@ class ArtworkService:
             if expand
             else Qt.AspectRatioMode.KeepAspectRatio
         )
-        scaled = raw.scaled(size, mode, Qt.TransformationMode.SmoothTransformation)
+        scaled = raw.scaled(physical, mode, Qt.TransformationMode.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
 
         self._cache[cache_key] = (scaled, mtime)
         self._cache.move_to_end(cache_key)

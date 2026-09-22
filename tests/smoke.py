@@ -511,6 +511,92 @@ def artwork_cache_returns_the_same_pixmap() -> None:
 
 
 @test
+def banner_searches_ask_the_api_for_banners() -> None:
+    """Regression: "Heroes".lower().rstrip("s") is "heroe", not "hero".
+
+    Choosing Heroes therefore searched covers while the download was
+    saved as a banner, so portrait art got cropped into a thin strip and
+    stretched - the blurry, badly fitting banner.
+    """
+    from launcher.services.sgdb import ENDPOINTS
+    from launcher.ui.dialogs.sgdb_dialog import ART_TYPES
+
+    assert ART_TYPES["Banners"] == "hero"
+    assert ART_TYPES["Covers"] == "grid"
+    assert set(ART_TYPES.values()) == set(ENDPOINTS), "every type needs an endpoint"
+    assert ENDPOINTS["hero"] == "heroes"
+
+
+@test
+def artwork_is_filed_by_its_real_shape() -> None:
+    from PySide6.QtGui import QImage
+
+    from launcher.services.artwork import GRID, HERO, classify
+
+    assert classify(1920, 620, HERO.name) == HERO.name
+    assert classify(600, 900, HERO.name) == GRID.name, "a cover is not a banner"
+    assert classify(1024, 1024, HERO.name) == GRID.name
+    assert classify(1920, 620, GRID.name) == HERO.name
+
+    with sandbox() as ctx:
+        cover = QImage(600, 900, QImage.Format.Format_RGB32)
+        cover.fill(0x335577)
+        stored = ctx.artwork.store("Game", HERO.name, cover)
+        assert stored.parent.name == GRID.name, "portrait saved into the banner slot"
+
+
+@test
+def covers_misfiled_as_banners_are_moved_back() -> None:
+    from PySide6.QtGui import QImage, QImageWriter
+
+    from launcher.services.artwork import GRID, HERO
+
+    with sandbox() as ctx:
+        hero_dir = ctx.artwork.art_dir(HERO.name)
+        hero_dir.mkdir(parents=True)
+        portrait = QImage(266, 400, QImage.Format.Format_RGB32)
+        portrait.fill(0x223344)
+        QImageWriter(str(hero_dir / "nightreign.png"), b"png").write(portrait)
+        wide = QImage(1920, 620, QImage.Format.Format_RGB32)
+        wide.fill(0x445566)
+        QImageWriter(str(hero_dir / "real-banner.webp"), b"webp").write(wide)
+
+        moved = ctx.artwork.reclassify_misfiled()
+        assert [t.parent.name for _, t in moved] == [GRID.name], moved
+        assert (ctx.artwork.art_dir(GRID.name) / "nightreign.png").is_file()
+        assert (hero_dir / "real-banner.webp").is_file(), "a real banner was moved"
+
+
+@test
+def stored_art_keeps_native_resolution() -> None:
+    """The old 400px caps meant anything larger on screen was upscaled."""
+    from PySide6.QtGui import QImage
+
+    from launcher.services.artwork import GRID, HERO
+
+    with sandbox() as ctx:
+        for art, (w, h) in ((GRID.name, (600, 900)), (HERO.name, (1920, 620))):
+            image = QImage(w, h, QImage.Format.Format_RGB32)
+            image.fill(0x556677)
+            path = ctx.artwork.store("Game", art, image)
+            kept = QImage(str(path))
+            assert (kept.width(), kept.height()) == (w, h), (art, kept.size())
+
+
+@test
+def the_banner_never_upscales_a_cover() -> None:
+    from PySide6.QtGui import QImage
+
+    from launcher.ui.widgets.hero_banner import fit_no_upscale
+
+    small = QImage(266, 400, QImage.Format.Format_RGB32)
+    w, h = fit_no_upscale(small, 1000, 1000)
+    assert (w, h) == (266, 400), "enlarged past native size"
+    w, h = fit_no_upscale(small, 1000, 200)
+    assert h == 200 and w < 266
+
+
+@test
 def artwork_cleanup_only_does_what_was_asked() -> None:
     from PySide6.QtGui import QImageWriter
 

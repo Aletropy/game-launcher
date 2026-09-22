@@ -22,10 +22,10 @@ from launcher.domain.models import (
     format_last_played,
     format_playtime,
 )
-from launcher.services.artwork import GRID, ArtworkService
+from launcher.services.artwork import GRID, ICON, ArtworkService
 from launcher.ui.theme import DARK
 
-_ICON_SIZE = QSize(28, 40)
+_ICON_SIZE = QSize(34, 34)
 
 
 def _running_dot(colour: str) -> QIcon:
@@ -156,7 +156,7 @@ class LibrarySidebar(QWidget):
             item = QListWidgetItem(game.name)
             item.setData(Qt.ItemDataRole.UserRole, game.name)
             item.setSizeHint(QSize(0, 46))
-            icon = self._artwork.pixmap(game.name, GRID.name, _ICON_SIZE, expand=True)
+            icon = self._row_icon(game.name)
             if icon is not None:
                 item.setIcon(QIcon(icon))
             self._decorate(item, game)
@@ -169,6 +169,13 @@ class LibrarySidebar(QWidget):
             self._list.setCurrentRow(0)
         else:
             self.selection_changed.emit("")
+
+    def _row_icon(self, name: str) -> QPixmap | None:
+        """The game's icon, or a square crop of its cover."""
+        dpr = self.devicePixelRatioF()
+        return self._artwork.pixmap(
+            name, ICON.name, _ICON_SIZE, dpr=dpr
+        ) or self._artwork.pixmap(name, GRID.name, _ICON_SIZE, expand=True, dpr=dpr)
 
     def _decorate(self, item: QListWidgetItem, game: Game) -> None:
         marks = []

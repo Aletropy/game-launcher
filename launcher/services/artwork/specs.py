@@ -31,14 +31,41 @@ class ArtSpec:
     quality: int = 82
 
 
-#: Card art is portrait; the card is 200x280, so 400x600 covers 2x displays.
-GRID: Final = ArtSpec("grid", 400, 600)
-#: The detail panel banner, roughly 2x a 640px wide panel.
-HERO: Final = ArtSpec("hero", 1280, 400)
-#: Small square art for list rows.
-ICON: Final = ArtSpec("icon", 128, 128, fmt="png", quality=-1)
+#: Portrait cover art. SteamGridDB serves these at 600x900, so that is
+#: stored as-is: the old 400x600 cap meant any larger display upscaled.
+GRID: Final = ArtSpec("grid", 600, 900, quality=88)
+#: Wide banner. SteamGridDB heroes are 1920x620; keeping the full width
+#: means the detail banner is always drawn by scaling down, never up.
+HERO: Final = ArtSpec("hero", 1920, 620, quality=86)
+#: Square icon for list rows.
+ICON: Final = ArtSpec("icon", 256, 256, fmt="png", quality=-1)
+#: Transparent title logo, drawn over the banner.
+LOGO: Final = ArtSpec("logo", 960, 400, fmt="png", quality=-1)
 
-SPECS: Final[dict[str, ArtSpec]] = {s.name: s for s in (GRID, HERO, ICON)}
+SPECS: Final[dict[str, ArtSpec]] = {s.name: s for s in (GRID, HERO, ICON, LOGO)}
+
+#: A banner is at least this much wider than tall (SteamGridDB: 3.1).
+_BANNER_MIN_ASPECT = 1.6
+#: A cover is at most this wide relative to its height (SteamGridDB: 0.67).
+_COVER_MAX_ASPECT = 1.2
+
+
+def classify(width: int, height: int, requested: str) -> str:
+    """The art type an image really is, whatever it was requested as.
+
+    Guards the banner: a portrait cover saved as a hero gets
+    centre-cropped into a thin strip and stretched, which is exactly how
+    blurry, badly fitting banners happened. Icons and logos are trusted,
+    since their shapes vary.
+    """
+    if requested not in (GRID.name, HERO.name) or not height:
+        return requested
+    aspect = width / height
+    if requested == HERO.name and aspect < _BANNER_MIN_ASPECT:
+        return GRID.name
+    if requested == GRID.name and aspect > _COVER_MAX_ASPECT * 1.5:
+        return HERO.name
+    return requested
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
 
