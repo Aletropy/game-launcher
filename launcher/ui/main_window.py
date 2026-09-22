@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
 from launcher.app.data_cleaner import DataKind
 from launcher.app.library_controller import LibraryController
 from launcher.domain.models import Game, SortOrder
+from launcher.services.tasks import TaskGroup
+from launcher.services.updates import UpdateInfo
 from launcher.ui.close_policy import decide
 from launcher.ui.dialogs.artwork_cleanup import ArtworkCleanupDialog, human
 from launcher.ui.dialogs.artwork_wizard import ArtworkWizard
@@ -64,6 +66,10 @@ _FRIENDS_VIEW = 2
 _VIEW_MODES = {_LIBRARY_VIEW: "library", _JOURNAL_VIEW: "journal", _FRIENDS_VIEW: "friends"}
 
 
+class _UpdateCancelledError(Exception):
+    """Raised from the download progress callback when the user cancels."""
+
+
 class MainWindow(QMainWindow):
     """The library (sidebar and detail panel), the play Journal and Friends."""
 
@@ -85,6 +91,13 @@ class MainWindow(QMainWindow):
         self._appearance_stale = False
         #: True once the tray's Quit path confirmed; lets closeEvent through.
         self._quitting = False
+        #: A newer GitHub release the badge is offering, if any.
+        self._pending_update: UpdateInfo | None = None
+        #: True while a background startup check is in flight.
+        self._update_silent = True
+        self._update_tasks = TaskGroup(self)
+        self._update_tasks.finished.connect(self._on_update_finished)
+        self._update_tasks.failed.connect(self._on_update_failed)
         self._tray_controller = TrayController(
             self._tray_icon(),
             lambda: list(self._ctx.processes.running_games),
@@ -151,6 +164,15 @@ class MainWindow(QMainWindow):
         self._view_group.idClicked.connect(self._switch_view)
 
         layout.addStretch()
+
+        # A tiny badge offering a newer GitHub release. Hidden until a
+        # background check finds one; installing waits for the user.
+        self._update_btn = QPushButton("")
+        self._update_btn.setObjectName("topMenuButton")
+        self._update_btn.setFixedHeight(32)
+        self._update_btn.hide()
+        self._update_btn.clicked.connect(self._open_update_dialog)
+        layout.addWidget(self._update_btn)
 
         # Everything else lives in Settings, grouped by subject; saves get
         # a menu here because they are what people reach for mid-session.
@@ -730,6 +752,213 @@ class MainWindow(QMainWindow):
         dialog.shared_saves_requested.connect(self._open_saves)
         dialog.backups_requested.connect(self._open_backups)
         dialog.exec()
+
+    # -- updates -------------------------------------------------------
+
+    def check_for_updates_on_startup(self) -> None:
+        """Ask GitHub for a newer release, once a day at most.
+
+        Called after the window is on screen, never from __init__.
+        Silent: a badge appears when there is something to install, and
+        nothing happens otherwise.
+        """
+        from launcher.services import updates
+
+        settings = self._ctx.settings
+        if not updates.should_auto_check(
+            settings.get_bool("update_auto_check"),
+            settings.get_str("update_last_check"),
+        ):
+            return
+        self._update_silent = True
+        repo = settings.get_str("update_repo").strip() or updates.DEFAULT_REPO
+        current = updates.current_version()
+        self._update_tasks.submit(lambda: updates.check_github(repo, current))
+
+    def _show_update_badge(self, info: UpdateInfo) -> None:
+        self._pending_update = info
+        self._update_btn.setText(f"\u2193 {info.version}")
+        self._update_btn.setToolTip(
+            f"Version {info.version} is available \u2014 install when ready"
+        )
+        self._update_btn.show()
+
+    def _hide_update_badge(self) -> None:
+        self._pending_update = None
+        self._update_btn.hide()
+
+    def _on_update_finished(self, _token: int, result: object) -> None:
+        from launcher.services import updates
+
+        if not isinstance(result, UpdateInfo):
+            self._on_update_failed(_token, str(result))
+            return
+        if not result.available:
+            # A version means the release was fetched and is not newer;
+            # empty means the network failed, so don't stamp the retry.
+            if result.version:
+                self._ctx.settings.set("update_last_check", updates.stamp_now())
+                self._hide_update_badge()
+            return
+        self._ctx.settings.set("update_last_check", updates.stamp_now())
+        if result.version == self._ctx.settings.get_str("update_skipped_version").strip():
+            self._hide_update_badge()
+            return
+        self._show_update_badge(result)
+        self.statusBar().showMessage(
+            f"Version {result.version} is available \u2014 click \u2193 to install.",
+            10000,
+        )
+
+    def _on_update_failed(self, _token: int, _message: str) -> None:
+        # Background checks fail silently; the next launch tries again.
+        # (A manual check from Settings reports through its own dialog.)
+        if not self._update_silent:
+            self.statusBar().showMessage("Could not check for updates.", 6000)
+
+    def _open_update_dialog(self) -> None:
+        """Offer the pending release: install now, later, or skip."""
+        from launcher.services import updates
+        from launcher.ui.dialogs.update_dialog import UpdateDialog
+
+        info = self._pending_update
+        if info is None:
+            return
+        dialog = UpdateDialog(info, updates.current_version(), self)
+        dialog.exec()
+        if dialog.result_action == "skip":
+            self._ctx.settings.set("update_skipped_version", info.version)
+            self._hide_update_badge()
+            self.statusBar().showMessage(
+                f"Skipped version {info.version}.", 6000
+            )
+        elif dialog.result_action == "install":
+            self._install_update(info)
+
+    def _install_update(self, info: UpdateInfo) -> None:
+        """Download the release and hand over to its installer on quit."""
+        from launcher.services import updates
+        from launcher.ui.dialogs.confirm import Answer, ask
+
+        if self._ctx.processes.running_games:
+            warn(
+                self,
+                "Install Update",
+                "Stop every running game first, then install the update.",
+            )
+            return
+        dest = updates.installer_dest(info.version)
+        if not self._fetch_installer(info, dest):
+            return
+        if ask(
+            self,
+            "Install Update",
+            f"Install version {info.version} now?\n\n"
+            "The launcher restarts. Games, prefixes, artwork and settings "
+            "are kept.",
+            default=Answer.YES,
+        ) is not Answer.YES:
+            return
+        updates.schedule_install(dest, self._ctx.paths.base)
+        self.statusBar().showMessage(f"Installing version {info.version}\u2026", 6000)
+        self._quitting = True
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            app.quit()
+        else:
+            self.close()
+
+    def _fetch_installer(self, info: UpdateInfo, dest: Path) -> bool:
+        """Download the installer unless a complete copy is cached."""
+        if self._cached_copy_valid(info, dest) and self._verify_installer(dest):
+            return True
+        if not info.url:
+            warn(self, "Install Update", "This release has no download to install.")
+            return False
+        if not self._download_installer(info, dest):
+            return False
+        return self._accept_installer(info, dest)
+
+    def _cached_copy_valid(self, info: UpdateInfo, dest: Path) -> bool:
+        """Whether the cached file already matches the release size."""
+        if info.size_bytes <= 0:
+            return False
+        try:
+            return dest.is_file() and dest.stat().st_size == info.size_bytes
+        except OSError:
+            return False
+
+    def _download_installer(self, info: UpdateInfo, dest: Path) -> bool:
+        """Fetch the installer with progress and cancel. Never raises."""
+        from PySide6.QtWidgets import QApplication, QProgressDialog
+
+        from launcher.services import updates
+
+        progress = QProgressDialog(
+            f"Downloading version {info.version}\u2026", "Cancel", 0, 100, self
+        )
+        progress.setWindowTitle("Downloading update")
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        def _on_progress(done: int, total: int) -> None:
+            if progress.wasCanceled():
+                raise _UpdateCancelledError
+            if total > 0:
+                progress.setMaximum(100)
+                progress.setValue(min(100, done * 100 // total))
+            else:
+                progress.setMaximum(0)
+            QApplication.processEvents()
+
+        try:
+            updates.download_asset(info.url, dest, _on_progress)
+        except _UpdateCancelledError:
+            self.statusBar().showMessage("Download cancelled.", 6000)
+            return False
+        except (OSError, ValueError) as e:
+            warn(self, "Install Update", f"Could not download the update:\n{e}")
+            return False
+        finally:
+            progress.close()
+        return True
+
+    def _accept_installer(self, info: UpdateInfo, dest: Path) -> bool:
+        """Check the size and integrity of a fresh download."""
+        try:
+            complete = info.size_bytes <= 0 or dest.stat().st_size == info.size_bytes
+        except OSError:
+            complete = False
+        if not complete:
+            warn(self, "Install Update", "The download looks incomplete. Try again.")
+            return False
+        if not self._verify_installer(dest):
+            warn(
+                self,
+                "Install Update",
+                "The downloaded installer failed its integrity check. "
+                "It was kept; try again or fetch it from GitHub manually.",
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _verify_installer(path: Path) -> bool:
+        """Unpack to a scratch dir, which verifies the payload checksum."""
+        import subprocess
+        import tempfile
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="milso-update-verify-") as scratch:
+                completed = subprocess.run(  # noqa: S603 - path from our cache
+                    [str(path), "--extract", scratch],
+                    capture_output=True,
+                    check=False,
+                    timeout=180,
+                )
+        except (subprocess.SubprocessError, OSError):
+            return False
+        return completed.returncode == 0
 
     def _clear_data(self, name: str = "", parent: QWidget | None = None) -> None:
         dialog = ClearDataDialog(self._ctx, name or None, parent or self)

@@ -8,11 +8,11 @@ Steam Flatpak container.
 One file, run once:
 
 ```bash
-./milso-launcher-2.2.0.run             # install, or upgrade in place
-./milso-launcher-2.2.0.run --target DIR
-./milso-launcher-2.2.0.run --yes       # no questions
-./milso-launcher-2.2.0.run --check     # dependencies only, changes nothing
-./milso-launcher-2.2.0.run --extract DIR
+./milso-launcher-2.3.0.run             # install, or upgrade in place
+./milso-launcher-2.3.0.run --target DIR
+./milso-launcher-2.3.0.run --yes       # no questions
+./milso-launcher-2.3.0.run --check     # dependencies only, changes nothing
+./milso-launcher-2.3.0.run --extract DIR
 ```
 
 It verifies its own payload, unpacks itself, finds an existing
@@ -104,8 +104,8 @@ byte-identical.
 To install elsewhere:
 
 ```bash
-tar xzf milso-launcher-2.2.0.tar.gz
-cd milso-launcher-2.2.0
+tar xzf milso-launcher-2.3.0.tar.gz
+cd milso-launcher-2.3.0
 ./install.sh
 ```
 
@@ -154,7 +154,7 @@ launcher/
     protons.py   installed Proton builds for the game editor
     steam_import.py  installed Steam games worth adding
     shortcuts.py per-game .desktop entries
-    updates.py   release-feed version checks
+    updates.py   GitHub Releases checks, download and install
     sgdb.py      SteamGridDB
     importer.py  finding games in a folder
     tasks.py     bounded background work
@@ -501,12 +501,24 @@ hashed on the server, and in
 
 ## Updates
 
-Releases are versioned `.run` files. Settings → About shows the running
-version and, once a release feed URL is configured there, can check it:
-a JSON document of the form
-`{"version": "2.2.0", "url": "https://…", "notes": "…"}`, compared
-numerically against the installed version, with a Download button when
-newer. Empty feed means never check; nothing phones home by default.
+Releases are versioned `.run` files published on GitHub Releases (one
+per `v*` tag, built by the release workflow). On startup, at most once
+a day, the launcher asks the GitHub API for the latest release and
+compares its tag numerically against the installed version.
+
+When a newer release is out, a tiny `↓ version` button appears in the
+top bar. Click it when ready: a dialog shows the release notes with
+Install now, Later and Skip this version. Nothing is downloaded until
+you pick Install now. Installing downloads the `.run` to the cache,
+verifies its integrity, then runs it with `--yes` into the current
+installation once the launcher quits — games, prefixes, artwork and
+settings are kept, exactly like running the installer by hand. It
+refuses while a game is running.
+
+Settings → About shows the running version, a Check for updates
+button, the GitHub repository checked (as `owner/name`), and whether to
+check automatically. Skipped versions can be unskipped there; only that
+version is silenced, newer ones still notify.
 
 ## Per-game configuration
 

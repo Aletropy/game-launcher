@@ -83,9 +83,22 @@ class Preferences:
     # -- updates ----------------------------------------------------------
 
     @property
-    def update_feed_url(self) -> str:
-        return self._settings.get_str("update_feed_url").strip()
+    def update_repo(self) -> str:
+        return self._settings.get_str("update_repo").strip()
+
+    @property
+    def update_auto_check(self) -> bool:
+        return self._settings.get_bool("update_auto_check")
 
     @property
     def update_last_check(self) -> str:
         return self._settings.get_str("update_last_check")
+
+    @property
+    def update_skipped_version(self) -> str:
+        return self._settings.get_str("update_skipped_version").strip()
+
+    @property
+    def update_feed_url(self) -> str:
+        """Legacy JSON feed setting. Unused since GitHub Releases took over."""
+        return self._settings.get_str("update_feed_url").strip()

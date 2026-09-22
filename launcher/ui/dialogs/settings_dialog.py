@@ -437,12 +437,25 @@ class SettingsDialog(QDialog):
         update_row.addWidget(self._download_btn)
         update_row.addStretch()
         about.form.addRow(update_row)
-        self._feed_edit = QLineEdit()
-        self._feed_edit.setPlaceholderText("Release feed URL (optional)")
-        about.form.addRow("Feed", self._feed_edit)
-        about.form.addRow(
-            _hint("Empty means never check. Points at a JSON release feed.")
+        self._auto_check = QCheckBox("Check automatically on startup")
+        self._auto_check.setToolTip(
+            "Once a day at most. Nothing is downloaded without asking."
         )
+        about.form.addRow(self._auto_check)
+        self._repo_edit = QLineEdit()
+        self._repo_edit.setPlaceholderText(updates.DEFAULT_REPO)
+        about.form.addRow("Releases", self._repo_edit)
+        about.form.addRow(
+            _hint("GitHub repository to check, as owner/name.")
+        )
+        skip_row = QHBoxLayout()
+        self._skip_hint = _hint("")
+        skip_row.addWidget(self._skip_hint, stretch=1)
+        self._skip_clear_btn = QPushButton("Unskip")
+        self._skip_clear_btn.setToolTip("Offer the skipped version again")
+        self._skip_clear_btn.clicked.connect(self._clear_skipped_version)
+        skip_row.addWidget(self._skip_clear_btn)
+        about.form.addRow(skip_row)
         paths = self._ctx.paths
         places = _Card("Where things live")
         for label, path in (
@@ -471,7 +484,9 @@ class SettingsDialog(QDialog):
         settings = self._ctx.settings
         self._confirm_remove.setChecked(settings.get_bool("confirm_remove"))
         self._close_to_tray.setChecked(settings.get_bool("close_to_tray"))
-        self._feed_edit.setText(settings.get_str("update_feed_url"))
+        self._auto_check.setChecked(settings.get_bool("update_auto_check"))
+        self._repo_edit.setText(settings.get_str("update_repo"))
+        self._refresh_skip_row()
         self._log_lines.setValue(settings.get_int("log_max_lines"))
         self._api_key.setText(settings.get_str("sgdb_api_key"))
         self._fetch_on_add.setChecked(settings.get_bool("fetch_artwork_on_add"))
@@ -497,7 +512,8 @@ class SettingsDialog(QDialog):
             "confirm_remove": self._confirm_remove.isChecked(),
             "close_to_tray": self._close_to_tray.isChecked(),
             "close_to_tray_asked": True,
-            "update_feed_url": self._feed_edit.text().strip(),
+            "update_auto_check": self._auto_check.isChecked(),
+            "update_repo": self._repo_edit.text().strip(),
             "log_max_lines": self._log_lines.value(),
             "sgdb_api_key": self._api_key.text().strip(),
             "fetch_artwork_on_add": self._fetch_on_add.isChecked(),
@@ -527,26 +543,41 @@ class SettingsDialog(QDialog):
             apply_theme(app, look)
 
     def _update_summary(self) -> str:
-        last = self._ctx.settings.get_str("update_last_check")
-        if not self._ctx.settings.get_str("update_feed_url").strip():
-            return "Update checks are off (no feed configured)."
         if self._pending_update is not None:
             return f"Version {self._pending_update.version} is available."
+        skipped = self._ctx.settings.get_str("update_skipped_version").strip()
+        if skipped:
+            return f"Version {skipped} was skipped. Newer releases still notify."
+        if not self._ctx.settings.get_bool("update_auto_check"):
+            return "Automatic checks are off."
+        last = self._ctx.settings.get_str("update_last_check")
         if last:
             return f"Up to date as of {last}."
         return "Never checked."
 
+    def _refresh_skip_row(self) -> None:
+        skipped = self._ctx.settings.get_str("update_skipped_version").strip()
+        has_skip = bool(skipped)
+        self._skip_hint.setText(
+            f"Skipped version {skipped}." if has_skip else ""
+        )
+        self._skip_hint.setVisible(has_skip)
+        self._skip_clear_btn.setVisible(has_skip)
+
+    def _clear_skipped_version(self) -> None:
+        self._ctx.settings.set("update_skipped_version", "")
+        self._pending_update = None
+        self._update_status.setText(self._update_summary())
+        self._refresh_skip_row()
+
     def _check_updates(self) -> None:
         from launcher.services import updates
 
-        feed = self._feed_edit.text().strip()
-        if not feed:
-            self._update_status.setText("Set a feed URL first, then check.")
-            return
+        repo = self._repo_edit.text().strip() or updates.DEFAULT_REPO
         self._update_status.setText("Checking…")
         self._download_btn.setEnabled(False)
         current = updates.current_version()
-        self._update_tasks.submit(lambda: updates.check(feed, current))
+        self._update_tasks.submit(lambda: updates.check_github(repo, current))
 
     def _show_update_result(self, info: object) -> None:
         from launcher.services import updates
@@ -554,26 +585,42 @@ class SettingsDialog(QDialog):
         if not isinstance(info, UpdateInfo):
             self._update_status.setText("Could not check for updates.")
             return
+        if not info.available:
+            self._pending_update = None
+            if info.version:
+                self._ctx.settings.set("update_last_check", updates.stamp_now())
+                self._update_status.setText(
+                    f"Up to date as of {self._ctx.settings.get_str('update_last_check')}."
+                )
+            else:
+                self._update_status.setText("Could not check for updates.")
+            return
         self._ctx.settings.set("update_last_check", updates.stamp_now())
-        if info.available:
-            self._pending_update = info
-            text = f"Version {info.version} is available."
-            if info.notes:
-                text += f" {info.notes}"
-            self._update_status.setText(text)
-            self._download_btn.setEnabled(bool(info.url))
-        else:
+        skipped = self._ctx.settings.get_str("update_skipped_version").strip()
+        if info.version and info.version == skipped:
             self._pending_update = None
             self._update_status.setText(
-                f"Up to date as of {self._ctx.settings.get_str('update_last_check')}."
+                f"Version {info.version} was skipped. Clear it to be offered again."
             )
+            self._download_btn.setEnabled(False)
+            return
+        self._pending_update = info
+        text = f"Version {info.version} is available."
+        if info.notes:
+            first_line = info.notes.strip().splitlines()[0][:160]
+            if first_line:
+                text += f" {first_line}"
+        self._update_status.setText(text)
+        self._download_btn.setEnabled(bool(info.url or info.page_url))
 
     def _open_update_url(self) -> None:
         from PySide6.QtCore import QUrl
         from PySide6.QtGui import QDesktopServices
 
-        if self._pending_update is not None and self._pending_update.url:
-            QDesktopServices.openUrl(QUrl(self._pending_update.url))
+        if self._pending_update is not None:
+            url = self._pending_update.page_url or self._pending_update.url
+            if url:
+                QDesktopServices.openUrl(QUrl(url))
 
     # -- API key check -------------------------------------------------
 
@@ -636,6 +683,7 @@ class SettingsDialog(QDialog):
     def reject(self) -> None:
         self._tasks.cancel_all()
         self._friends_tasks.cancel_all()
+        self._update_tasks.cancel_all()
         if self._appearance.appearance != self._original_look:
             self._preview_look(self._original_look)
         super().reject()

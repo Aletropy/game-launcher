@@ -49,9 +49,14 @@ DEFAULTS: dict[str, Any] = {
     "friends_mode": "offline",
     "friends_server_url": "http://10.0.0.25:8765",
     "friends_share_presence": True,
-    # Release feed checked by Settings → About. Empty means never check.
-    "update_feed_url": "",
+    # GitHub Releases checked by the startup badge and Settings → About.
+    "update_repo": "Aletropy/milso-launcher",
+    "update_auto_check": True,
     "update_last_check": "",
+    "update_skipped_version": "",
+    # Legacy JSON release feed (pre-GitHub). Kept so downgrades do not
+    # discard it; nothing reads it any more.
+    "update_feed_url": "",
     # Where the Browse button starts when picking a game.
     "last_game_folder": "",
     "last_import_folder": "",
