@@ -1,18 +1,23 @@
 # Milso Launcher
 
-A PySide6 launcher for running Windows games through Proton inside the
-Steam Flatpak container.
+A PySide6 game library: artwork, playtime, saves, backups and friends.
+
+Linux is the main version: it runs Windows games through Proton inside
+the Steam Flatpak container. Windows is a sub-app for managing the same
+kind of library natively — it runs each game's `.exe` directly, with no
+Proton, no prefixes and no Flatpak. One codebase, one version number;
+`launcher/platform.py` is the single branch point (see Platforms below).
 
 ## Install
 
 One file, run once:
 
 ```bash
-./milso-launcher-2.3.1.run             # install, or upgrade in place
-./milso-launcher-2.3.1.run --target DIR
-./milso-launcher-2.3.1.run --yes       # no questions
-./milso-launcher-2.3.1.run --check     # dependencies only, changes nothing
-./milso-launcher-2.3.1.run --extract DIR
+./milso-launcher-2.4.0.run             # install, or upgrade in place
+./milso-launcher-2.4.0.run --target DIR
+./milso-launcher-2.4.0.run --yes       # no questions
+./milso-launcher-2.4.0.run --check     # dependencies only, changes nothing
+./milso-launcher-2.4.0.run --extract DIR
 ```
 
 It verifies its own payload, unpacks itself, finds an existing
@@ -44,23 +49,40 @@ The installer checks for Python, bash, the Steam Flatpak and the optional
 extras (gamescope, winetricks), creates `.venv`, installs PySide6, adds a
 `milso-launcher` command to `~/.local/bin` and a desktop entry so the app
 appears in your menu. Nothing is installed system-wide and nothing needs
-root. Uninstalling leaves your games, prefixes, artwork and settings
-alone.
+root. If Python 3.11+ is missing it offers to install it via your package
+manager (Debian/Ubuntu `apt`, Fedora `dnf`, Arch `pacman`, openSUSE
+`zypper`); with `--yes` it installs without asking. Uninstalling leaves
+your games, prefixes, artwork and settings alone.
+
+## Install on Windows
+
+Extract the `-win.zip` from the same release, then run once:
+
+```bat
+setup-win.bat            :: install into %LOCALAPPDATA%\MilsoLauncher
+setup-win.bat -Target DIR -Yes
+```
+
+It installs Python 3.11+ via `winget` when missing, creates `.venv`,
+installs PySide6 and adds a Start Menu shortcut. `run-win.bat` starts
+the app from the folder. Upgrading keeps `games/`, `Saves/`,
+`backups/`, artwork and settings.
 
 ## Building a release
 
 ```bash
-./package.sh              # dist/*.run and dist/*.tar.gz
+./package.sh              # dist/*.run, dist/*-win.zip and dist/*.tar.gz
 ./package.sh --no-check   # skip the test and lint gate
 ./package.sh --clean      # remove dist/
 ```
 
-It produces four artifacts:
+It produces five artifacts (all checksummed with SHA-256):
 
 | | |
 |---|---|
 | `*-bundle.tar.gz` | one `.tar.gz` to send by mail, chat or a USB stick |
-| `*.run` | one file; run it once to install or upgrade in place |
+| `*.run` | Linux: one file; run it once to install or upgrade in place |
+| `*-win.zip` | Windows sub-app: extract and run `setup-win.bat` |
 | `*.tar.gz` | the same payload as a plain archive |
 | `*-src.tar.gz` | the whole project, to publish anywhere |
 
@@ -104,8 +126,8 @@ byte-identical.
 To install elsewhere:
 
 ```bash
-tar xzf milso-launcher-2.3.1.tar.gz
-cd milso-launcher-2.3.1
+tar xzf milso-launcher-2.4.0.tar.gz
+cd milso-launcher-2.4.0
 ./install.sh
 ```
 
@@ -125,36 +147,38 @@ without a running Steam Flatpak.
 
 ```
 launcher/
+  platform.py    the single OS branch point: is_windows() / is_linux()
   domain/      models and rules. No Qt, no I/O, no globals.
     models.py    GameConfig, GameStats, Game, sorting and formatting
     config.py    reading and writing bash .conf files
-    prefixes.py  prefix resolution, mirroring milso-launcher.sh
-    prefix_health  prefix size, freshness and broken save links
+    prefixes.py  prefix resolution, mirroring milso-launcher.sh (Linux only)
+    prefix_health  prefix size, freshness and broken save links (Linux only)
     crash_signatures  telling a crash from a quit
     outcome.py   typed Ok/Err results and launch blocks
     journal.py   play sessions: heatmap, streaks, totals
     backup_policy  what backups leave out and how long they are kept
     friends.py   snapshots, leaderboards and games in common
   data/        persistence, each taking a Paths in its constructor
-    paths.py         every filesystem location, as an object
-    game_repository  games/*.conf
+    paths.py         every filesystem location, as an object (XDG or %APPDATA%)
+    game_repository  games/*.conf (Proton keys skipped when writing on Windows)
     settings_store   preferences (JSON)
     preferences      typed access over the settings
     state_store      playtime, sessions, favourites, tags (SQLite)
   services/    side effects
     artwork/     specs, store + display cache, cleanup
-    process.py   launching games and timing sessions
+    process.py   launching games and timing sessions (Proton script vs raw .exe)
     sessions.py  active launches on disk (locked) and pending sidecars
     session_watcher.py  detached per-game watcher for full playtime
     game_log.py  per-game log files that survive restarts
-    save_store.py  the shared Saves/ folder and the links into it
+    save_store.py  the shared Saves/ folder and the links into it (Linux only)
+    win_saves.py  Windows save auto-discovery + copy-only mirror into Saves/<Game>/
     save_exchange.py  export/import saves as zip archives
     backups.py   incremental snapshots of Saves/, and restoring them
-    prefix_tools winecfg / winetricks / open folder / rebuild
-    protons.py   installed Proton builds for the game editor
-    steam_import.py  installed Steam games worth adding
-    shortcuts.py per-game .desktop entries
-    updates.py   GitHub Releases checks, download and install
+    prefix_tools winecfg / winetricks / open folder / rebuild (Linux only)
+    protons.py   installed Proton builds for the game editor (Linux only)
+    steam_import.py  installed Steam games worth adding (per-OS library roots)
+    shortcuts.py per-game entries (.desktop on Linux, Start Menu .url on Windows)
+    updates.py   GitHub Releases checks, download and install (per-OS asset)
     sgdb.py      SteamGridDB
     importer.py  finding games in a folder
     tasks.py     bounded background work
@@ -162,10 +186,10 @@ launcher/
     context.py           builds the object graph
     library_controller   library state and every mutation
     session_recorder     launches, sessions and crash diagnosis
-    launch_checks        pre-launch blocks and warnings
+    launch_checks        pre-launch blocks and warnings (Steam/Proton checks Linux only)
     single_instance      one copy per user, with request forwarding
     startup.py           per-stage startup timings
-    save_keeper          automatic sharing and backups
+    save_keeper          automatic sharing and backups (mirror on Windows)
     main.py              entry point
   ui/          views, which talk to the controller and nothing else
     tray.py        the system tray icon and its live menu
@@ -193,6 +217,29 @@ per area, loaded by the same runner so CI needs one command:
 .venv/bin/ruff check launcher tests
 .venv/bin/mypy launcher
 ```
+
+## Platforms
+
+Linux is the main version; Windows is a sub-app sharing one codebase
+and one version number. The rule: `launcher/platform.py` owns every OS
+check — call sites use `platform.is_windows()`, never `sys.platform`
+directly — so Linux behaviour stays untouched behind the gate.
+
+Shared core (both): library, artwork, playtime/sessions/journal,
+backups/export/import, friends, updates framework, SteamGridDB import.
+
+Linux only: `milso-launcher.sh` (Flatpak enter + Proton), Wine prefixes
+(`domain/prefixes.py`, prefix tools, Proton picker, gamescope), the
+symlinked shared save store (`services/save_store.py`), `.desktop`
+shortcuts, XDG paths.
+
+Windows only: direct `.exe` launch (`services/process.py`), native save
+auto-discovery (`services/win_saves.py`, copy-only mirror into
+`Saves/<Game>/`, symlinks never created), Start Menu `.url` shortcuts,
+`%APPDATA%`/`%LOCALAPPDATA%` paths, `installer/setup-win.{bat,ps1}` and
+`run-win.bat`. The game editor hides Compatibility, App ID, Gamescope
+and Proton/driver fields; Proton keys in old confs still load but are
+never written back.
 
 ## Using it
 
@@ -227,8 +274,8 @@ Only one copy runs per user. Starting it again (or
 the running one and exits.
 
 **When a game fails.** Before launching, the launcher checks the
-executable, the prefix, the Steam Flatpak, the Proton path and free disk,
-and tells you everything at once instead of one dialog per problem. When
+executable, the prefix, the Steam Flatpak, the Proton path and free disk
+on Linux (executable and free disk on Windows), and tells you everything at once instead of one dialog per problem. When
 a session looks like a crash, a failure card names the likely cause,
 shows the log tail, and offers Copy log, a `--dry-run` of the launch
 configuration, and Open prefix. Game output is also kept in
@@ -293,12 +340,14 @@ Import and Export work on them from the same page.
 stored with a button to open each). Tools sit on the page they belong
 to. The toolbar keeps only Library and Journal, a Saves menu (shared
 saves, backups, back up now) and Settings. The game editor has General,
-Compatibility, Display and Advanced tabs; Advanced includes the Proton
-and driver variables (`WINEDEBUG`, `VKD3D_CONFIG` and friends).
+Compatibility, Display and Advanced tabs on Linux; on Windows
+Compatibility is hidden and Advanced keeps only Environment. Advanced
+includes the Proton and driver variables (`WINEDEBUG`, `VKD3D_CONFIG`
+and friends).
 
 **The ⋯ menu** on a selected game opens its prefix, runs winecfg or
-winetricks against it, and backs up saves or opens the backups at that
-game's own folder.
+winetricks against it (Linux only), and backs up saves or opens the
+backups at that game's own folder.
 
 **Journal**, the second view, is about time rather than games: a banner
 to continue the last game, total and weekly playtime, the current day
@@ -309,10 +358,20 @@ game was last played, marked as approximate.
 
 ## Shared saves
 
-Per-game prefixes are cheap to rebuild, but save data normally lives
-inside the prefix, so rebuilding one loses the saves and the same game
-in another prefix starts fresh. The shared store fixes that: one copy of
-the Windows user profile in `Saves/`, symlinked into every prefix.
+On Linux, per-game prefixes are cheap to rebuild, but save data normally
+lives inside the prefix, so rebuilding one loses the saves and the same
+game in another prefix starts fresh. The shared store fixes that: one
+copy of the Windows user profile in `Saves/`, symlinked into every
+prefix.
+
+On Windows there are no prefixes, so there is nothing to link. Instead
+the launcher auto-discovers native save folders (`%APPDATA%`,
+`%LOCALAPPDATA%`, `LocalLow`, `Documents`, `Saved Games`,
+`ProgramData`, the game's own folder) by matching the game and exe
+names, and mirrors confirmed folders copy-only into
+`Saves/<Game>/` — natives are only ever read, never moved or linked.
+Everything below (backups, export/import, conflicts) then works on
+`Saves/` exactly as on Linux.
 
 ```
 Saves/
@@ -467,6 +526,7 @@ Going online shares these with friends you have accepted:
 - your display name
 - your play history, including sessions recorded before you went online
 - the game you're playing now, if you allow it
+- your platform (`linux`, `windows`, or `unknown` for older clients)
 
 "Playing now" only covers games started from the launcher. When you clear
 play history under Settings → Data, it is cleared on the server too. If
@@ -476,7 +536,8 @@ you are offline at the time, it is cleared the next time you connect.
 ### The friends server
 
 The server is `server/`: standard-library Python and SQLite, with no
-dependencies. It is not included in release archives.
+dependencies. It ships as source inside the release archives; run it
+with:
 
 ```bash
 python -m server                          # 127.0.0.1:8765, ./friends-server.db
@@ -502,19 +563,21 @@ hashed on the server, and in
 
 ## Updates
 
-Releases are versioned `.run` files published on GitHub Releases (one
-per `v*` tag, built by the release workflow). On startup, at most once
-a day, the launcher asks the GitHub API for the latest release and
-compares its tag numerically against the installed version.
+Releases carry one asset per platform (`.run` for Linux,
+`-win.zip` for Windows) published on GitHub Releases (one per `v*`
+tag, built by the release workflow). On startup, at most once a day,
+the launcher asks the GitHub API for the latest release and compares
+its tag numerically against the installed version; each platform picks
+its own asset, so Linux never offers a Windows zip and vice versa.
 
 When a newer release is out, a tiny `↓ version` button appears in the
 top bar. Click it when ready: a dialog shows the release notes with
 Install now, Later and Skip this version. Nothing is downloaded until
-you pick Install now. Installing downloads the `.run` to the cache,
-verifies its integrity, then runs it with `--yes` into the current
-installation once the launcher quits — games, prefixes, artwork and
-settings are kept, exactly like running the installer by hand. It
-refuses while a game is running.
+you pick Install now. Installing downloads the platform asset to the
+cache, verifies its integrity, then runs it with `--yes` into the
+current installation once the launcher quits — games, prefixes (Linux),
+artwork and settings are kept, exactly like running the installer by
+hand. It refuses while a game is running.
 
 Settings → About shows the running version, a Check for updates
 button, the GitHub repository checked (as `owner/name`), and whether to
@@ -531,13 +594,15 @@ artwork, the favourite and the playtime together.
 |---|---|
 | `GAME_EXECUTABLE` | the .exe to run |
 | `GAME_ARGS` | arguments passed to it |
-| `GAMEID` / `OVERRIDE_APP_ID` | Steam app id used for the Proton environment |
-| `GAME_PREFIX` | per-game Wine prefix (see above) |
-| `CUSTOM_PROTON_PATH` | Proton build to use, as a path inside the Flatpak |
-| `ADDITIONAL_DLLS` | extra `WINEDLLOVERRIDES` entries |
-| `USE_GAMESCOPE`, `GAMESCOPE_*` | gamescope wrapping and resolutions |
+| `GAMEID` / `OVERRIDE_APP_ID` | Steam app id used for the Proton environment (Linux only) |
+| `GAME_PREFIX` | per-game Wine prefix, see above (Linux only) |
+| `CUSTOM_PROTON_PATH` | Proton build to use, as a path inside the Flatpak (Linux only) |
+| `ADDITIONAL_DLLS` | extra `WINEDLLOVERRIDES` entries (Linux only) |
+| `USE_GAMESCOPE`, `GAMESCOPE_*` | gamescope wrapping and resolutions (Linux only) |
 | `extra_vars` | environment variables, e.g. `("PROTON_NO_ESYNC=1")` |
-| `WINEDEBUG`, `RADV_PERFTEST`, `PULSE_LATENCY_MSEC`, `VKD3D_CONFIG`, `PROTON_USE_WINE_SYNC` | exported as-is |
+| `WINEDEBUG`, `RADV_PERFTEST`, `PULSE_LATENCY_MSEC`, `VKD3D_CONFIG`, `PROTON_USE_WINE_SYNC` | exported as-is (Linux only) |
+
+Linux-only keys still load on Windows but are never written back.
 
 Values are escaped when written, so paths containing quotes, `$` or
 backticks are safe even though the file is `source`d.
@@ -548,9 +613,9 @@ backticks are safe even though the file is `source`d.
 |---|---|
 | Games | `games/*.conf` |
 | Artwork | `launcher/artwork/{grid,hero,icon}/` |
-| Prefixes | `Prefix/`, `prefixes/<game>/`, or wherever you point them |
-| Shared saves | `Saves/` |
+| Prefixes | Linux: `Prefix/`, `prefixes/<game>/`, or wherever you point them |
+| Shared saves | `Saves/` (Linux: symlinked profile; Windows: `Saves/<Game>/` mirrors) |
 | Save backups | `backups/saves/<timestamp>/` |
-| Preferences | `~/.config/milso-launcher/settings.json` |
-| Playtime, sessions, favourites | `~/.local/share/milso-launcher/state.db` |
-| Game logs | `~/.local/share/milso-launcher/logs/` |
+| Preferences | Linux `~/.config/milso-launcher/settings.json`, Windows `%APPDATA%\milso-launcher` |
+| Playtime, sessions, favourites | Linux `~/.local/share/milso-launcher/state.db`, Windows `%LOCALAPPDATA%\milso-launcher` |
+| Game logs | Linux `~/.local/share/milso-launcher/logs/` |

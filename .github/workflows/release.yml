@@ -34,12 +34,14 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum milso-launcher-*.run > SHA256SUMS
+          sha256sum milso-launcher-*.run milso-launcher-*-win.zip > SHA256SUMS
           cat SHA256SUMS
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/milso-launcher-*.run
+            dist/milso-launcher-*-win.zip
+            dist/milso-launcher-*-win.sha256
             dist/SHA256SUMS
           generate_release_notes: true
