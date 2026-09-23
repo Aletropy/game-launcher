@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import contextlib
 import errno
-import fcntl
+
+try:
+    import fcntl
+except ImportError:  # Windows: no reflink ioctl; plain copies are used.
+    fcntl = None  # type: ignore[assignment]
 import json
 import os
 import shutil
@@ -157,19 +161,24 @@ def clone_or_copy(source: Path, dest: Path) -> bool:
     """
     cloned = False
     with open(source, "rb") as src, open(dest, "wb") as dst:
-        try:
-            fcntl.ioctl(dst.fileno(), _FICLONE, src.fileno())
-            cloned = True
-        except OSError as e:
-            if e.errno not in (
-                errno.EOPNOTSUPP,
-                errno.EXDEV,
-                errno.EINVAL,
-                errno.ENOTTY,
-                errno.EBADF,
-                errno.EPERM,
-            ):
-                raise
+        if fcntl is not None:
+            try:
+                fcntl.ioctl(dst.fileno(), _FICLONE, src.fileno())
+                cloned = True
+            except OSError as e:
+                if e.errno not in (
+                    errno.EOPNOTSUPP,
+                    errno.EXDEV,
+                    errno.EINVAL,
+                    errno.ENOTTY,
+                    errno.EBADF,
+                    errno.EPERM,
+                ):
+                    raise
+                shutil.copyfileobj(src, dst, 1024 * 1024)
+        else:
+            # Windows / filesystems without reflink: hard-link attempt is
+            # done by the caller via os.link; here just copy.
             shutil.copyfileobj(src, dst, 1024 * 1024)
     shutil.copystat(source, dest, follow_symlinks=False)
     return cloned
@@ -323,9 +332,7 @@ class BackupService:
 
     # -- taking --------------------------------------------------------
 
-    def create(
-        self, reason: str = "", *, pinned: bool = False, prune: bool = True
-    ) -> Snapshot:
+    def create(self, reason: str = "", *, pinned: bool = False, prune: bool = True) -> Snapshot:
         """Snapshot the store. Raises BackupError if it cannot."""
         if not self.store.is_dir():
             raise BackupError("There are no shared saves to back up yet.")
@@ -359,9 +366,7 @@ class BackupService:
         plan = self._plan(previous)
         self._check_space(plan)
 
-        snapshot = Snapshot(
-            path=final, created=created, reason=reason, pinned=pinned
-        )
+        snapshot = Snapshot(path=final, created=created, reason=reason, pinned=pinned)
         try:
             data.mkdir(parents=True)
             for entry in plan:
@@ -522,9 +527,7 @@ class BackupService:
             self._lock.release()
         return result
 
-    def _restore_locked(
-        self, snapshot: Snapshot, folder: str, result: RestoreResult
-    ) -> None:
+    def _restore_locked(self, snapshot: Snapshot, folder: str, result: RestoreResult) -> None:
         wanted: set[str] = set()
         source_root = snapshot.data / folder if folder else snapshot.data
         for full, path in _walk(source_root, base=snapshot.data):

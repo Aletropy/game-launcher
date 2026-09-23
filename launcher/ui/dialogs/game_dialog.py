@@ -67,8 +67,12 @@ class AddGameDialog(QDialog):
         main_layout.setSpacing(12)
 
         self._tabs = QTabWidget()
+        from launcher import platform as _platform
+
+        self._is_windows = _platform.is_windows()
         self._tabs.addTab(self._build_general(), "General")
-        self._tabs.addTab(self._build_compatibility(), "Compatibility")
+        if not self._is_windows:
+            self._tabs.addTab(self._build_compatibility(), "Compatibility")
         self._tabs.addTab(self._build_display(), "Display")
         self._tabs.addTab(self._build_advanced(), "Advanced")
         main_layout.addWidget(self._tabs, stretch=1)
@@ -124,13 +128,14 @@ class AddGameDialog(QDialog):
 
         self._appid_edit = QLineEdit("480")
         self._appid_edit.setPlaceholderText("480")
-        form.addRow("Steam App ID", self._appid_edit)
-        form.addRow(
-            _hint(
-                "Used by Proton for game-specific fixes. 480 (Spacewar) works "
-                "for games that are not on Steam."
+        if not self._is_windows:
+            form.addRow("Steam App ID", self._appid_edit)
+            form.addRow(
+                _hint(
+                    "Used by Proton for game-specific fixes. 480 (Spacewar) works "
+                    "for games that are not on Steam."
+                )
             )
-        )
         return page
 
     def _build_compatibility(self) -> QWidget:
@@ -198,6 +203,19 @@ class AddGameDialog(QDialog):
 
     def _build_display(self) -> QWidget:
         page, form = self._page()
+        if self._is_windows:
+            form.addRow(
+                _hint("Display options such as Gamescope are Linux-only.")
+            )
+            # Keep attribute shape so get_config() never branches on missing widgets.
+            self._gs_check = QCheckBox("Run inside Gamescope")
+            self._gs_check.setVisible(False)
+            self._gs_widget = QWidget()
+            self._gs_widget.setVisible(False)
+            self._gsw_edit = self._gsh_edit = QLineEdit("1280")
+            self._gswout_edit = self._gshout_edit = QLineEdit("1920")
+            self._gsargs_edit = QLineEdit("-f -e")
+            return page
         self._gs_check = QCheckBox("Run inside Gamescope")
         self._gs_check.toggled.connect(self._toggle_gamescope)
         form.addRow(self._gs_check)
@@ -237,18 +255,21 @@ class AddGameDialog(QDialog):
     def _build_advanced(self) -> QWidget:
         page, form = self._page()
         self._override_id_edit = QLineEdit()
-        self._override_id_edit.setPlaceholderText("Same as the Steam App ID")
-        form.addRow("Override App ID", self._override_id_edit)
+        if not self._is_windows:
+            self._override_id_edit.setPlaceholderText("Same as the Steam App ID")
+            form.addRow("Override App ID", self._override_id_edit)
 
         self._extra_vars_edit = QLineEdit()
         self._extra_vars_edit.setPlaceholderText("MY_VAR=value;OTHER=val")
         form.addRow("Environment", self._extra_vars_edit)
         form.addRow(_hint("Extra variables, separated by semicolons."))
 
+        self._env_edits: dict[str, QLineEdit] = {}
+        if self._is_windows:
+            return page
         section = QLabel("Proton and driver options")
         section.setObjectName("sectionTitle")
         form.addRow(section)
-        self._env_edits: dict[str, QLineEdit] = {}
         for field, label, placeholder in _ENV_FIELDS:
             edit = QLineEdit()
             edit.setPlaceholderText(placeholder)
@@ -265,6 +286,9 @@ class AddGameDialog(QDialog):
         self._exe_edit.setText(g.config.executable)
         self._appid_edit.setText(g.config.game_id)
         self._args_edit.setText(" ".join(g.config.game_args))
+        if self._is_windows:
+            self._extra_vars_edit.setText(";".join(g.config.extra_vars))
+            return
         self._select_proton(g.config.custom_proton_path)
         self._dlls_edit.setText(";".join(g.config.additional_dlls))
         self._gs_check.setChecked(g.config.use_gamescope)
@@ -337,9 +361,12 @@ class AddGameDialog(QDialog):
 
     def _selected_proton(self) -> str:
         """The custom Proton path, or "" for the default build."""
-        if self._proton_combo.currentData() == "__custom__":
+        combo = getattr(self, "_proton_combo", None)
+        if combo is None:
+            return ""
+        if combo.currentData() == "__custom__":
             return self._proton_edit.text().strip()
-        data = self._proton_combo.currentData()
+        data = combo.currentData()
         return str(data or "")
 
     def _select_proton(self, custom_path: str) -> None:
@@ -396,11 +423,23 @@ class AddGameDialog(QDialog):
         args_text = self._args_edit.text().strip()
         game_args = args_text.split() if args_text else []
 
-        dlls_text = self._dlls_edit.text().strip()
-        additional_dlls = [d.strip() for d in dlls_text.split(";") if d.strip()]
-
         extra_text = self._extra_vars_edit.text().strip()
         extra_vars = [v.strip() for v in extra_text.split(";") if v.strip()]
+
+        if self._is_windows:
+            base: dict[str, Any] = {
+                "name": name,
+                "executable": self._exe_edit.text().strip(),
+                "game_id": "480",
+                "game_args": game_args,
+                "extra_vars": extra_vars,
+            }
+            if self.is_edit and self.game is not None:
+                return replace(self.game.config, **base)
+            return GameConfig(**base)
+
+        dlls_text = self._dlls_edit.text().strip()
+        additional_dlls = [d.strip() for d in dlls_text.split(";") if d.strip()]
 
         prefix = (
             self._prefix_edit.text().strip() if self._prefix_custom.isChecked() else ""

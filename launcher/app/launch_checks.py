@@ -36,6 +36,10 @@ def check_launch(
     blocks: list[Block] = []
     warnings: list[Block] = []
 
+    from launcher import platform as _platform
+
+    windows = _platform.is_windows()
+
     if not game.executable:
         blocks.append(
             Block(
@@ -56,7 +60,7 @@ def check_launch(
         )
 
     info = inspect(game.prefix, paths)
-    if info.state is PrefixState.NOT_A_DIRECTORY:
+    if not windows and info.state is PrefixState.NOT_A_DIRECTORY:
         blocks.append(
             Block(
                 title="Prefix path is a file",
@@ -65,7 +69,7 @@ def check_launch(
                 kind="bad-prefix",
             )
         )
-    elif info.state is PrefixState.OUTSIDE_SANDBOX:
+    elif not windows and info.state is PrefixState.OUTSIDE_SANDBOX:
         warnings.append(
             Block(
                 title="Prefix may be invisible to the game",
@@ -76,28 +80,29 @@ def check_launch(
             )
         )
 
-    if steam_running is None:
-        steam_running = steam_flatpak_running()
-    if not steam_running:
-        warnings.append(
-            Block(
-                title="Steam does not look running",
-                detail="The Steam Flatpak was not detected.",
-                hint="Start Steam first; the launcher enters its container to play.",
-                kind="steam-not-running",
+    if not windows:
+        if steam_running is None:
+            steam_running = steam_flatpak_running()
+        if not steam_running:
+            warnings.append(
+                Block(
+                    title="Steam does not look running",
+                    detail="The Steam Flatpak was not detected.",
+                    hint="Start Steam first; the launcher enters its container to play.",
+                    kind="steam-not-running",
+                )
             )
-        )
 
-    custom_proton = (game.config.custom_proton_path or "").strip()
-    if custom_proton and not os.path.isdir(custom_proton):
-        warnings.append(
-            Block(
-                title="Custom Proton not found",
-                detail=f"The configured Proton path does not exist:\n{custom_proton}",
-                hint="Fix it in Edit → Compatibility, or clear it to use the default.",
-                kind="proton-not-found",
+        custom_proton = (game.config.custom_proton_path or "").strip()
+        if custom_proton and not os.path.isdir(custom_proton):
+            warnings.append(
+                Block(
+                    title="Custom Proton not found",
+                    detail=f"The configured Proton path does not exist:\n{custom_proton}",
+                    hint="Fix it in Edit → Compatibility, or clear it to use the default.",
+                    kind="proton-not-found",
+                )
             )
-        )
 
     if free_bytes is None:
         try:

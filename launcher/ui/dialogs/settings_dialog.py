@@ -233,13 +233,20 @@ class SettingsDialog(QDialog):
         behaviour.form.addRow("Keep game logs up to", self._log_lines)
 
         wine = _Card("Wine")
-        shared = prefixes.shared_prefix_path(self._ctx.paths)
-        path = QLabel(str(shared))
-        path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        wine.form.addRow("Shared prefix", path)
-        wine.form.addRow(
-            _hint("Games use it unless they have their own, set in Edit → Compatibility.")
-        )
+        from launcher import platform as _platform
+
+        if _platform.is_windows():
+            wine.form.addRow(
+                _hint("Wine prefixes are Linux-only; Windows runs games natively.")
+            )
+        else:
+            shared = prefixes.shared_prefix_path(self._ctx.paths)
+            path = QLabel(str(shared))
+            path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            wine.form.addRow("Shared prefix", path)
+            wine.form.addRow(
+                _hint("Games use it unless they have their own, set in Edit → Compatibility.")
+            )
         return self._column(behaviour, wine)
 
     def _build_artwork(self) -> QWidget:

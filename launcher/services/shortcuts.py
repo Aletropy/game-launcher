@@ -18,6 +18,20 @@ from launcher.services.artwork import ICON
 
 
 def _applications_dir() -> Path:
+    from launcher import platform as _platform
+
+    if _platform.is_windows():
+        appdata = os.environ.get("APPDATA") or str(
+            Path.home() / "AppData" / "Roaming"
+        )
+        return (
+            Path(appdata)
+            / "Microsoft"
+            / "Windows"
+            / "Start Menu"
+            / "Programs"
+            / "Milso Launcher"
+        )
     override = os.environ.get("XDG_DATA_HOME")
     base = Path(override) if override else Path.home() / ".local" / "share"
     return base / "applications"
@@ -29,14 +43,22 @@ def slug(name: str) -> str:
 
 
 def shortcut_path(name: str, directory: Path | None = None) -> Path:
+    from launcher import platform as _platform
+
+    if _platform.is_windows():
+        return (directory or _applications_dir()) / f"milso-{slug(name)}.url"
     return (directory or _applications_dir()) / f"milso-{slug(name)}.desktop"
 
 
 def launcher_command() -> str:
     """How a shortcut starts the launcher: the installed command, if any."""
+    from launcher import platform as _platform
+
     command = shutil.which("milso-launcher")
     if command:
         return command
+    if _platform.is_windows():
+        return str(Path(__file__).resolve().parents[2] / "run-win.bat")
     return str(Path(__file__).resolve().parents[2] / "run.sh")
 
 
@@ -54,6 +76,11 @@ def icon_for(artwork: Any, name: str) -> str:
     return str(fallback) if fallback.is_file() else ""
 
 
+def _safe_name(name: str) -> str:
+    """Single-line game name for shortcut files (blocks ini injection)."""
+    return " ".join(str(name).split())[:120] or "game"
+
+
 def create(
     name: str,
     *,
@@ -63,15 +90,33 @@ def create(
     """Write (or refresh) a game's shortcut. Returns its path."""
     import shlex
 
+    from launcher import platform as _platform
+
     target = shortcut_path(name, directory)
     target.parent.mkdir(parents=True, exist_ok=True)
+    safe = _safe_name(name)
     icon = icon_for(artwork, name) if artwork is not None else icon_for(None, name)
+    if _platform.is_windows():
+        # .url shortcuts need no COM dependency and pin from Explorer.
+        lines = [
+            "[InternetShortcut]",
+            f"URL=file:///{launcher_command()}",
+            f"IconFile={icon}" if icon else "IconFile=shell32.dll",
+            "IconIndex=0",
+            "[Milso Launcher]",
+            f"Game={safe}",
+            f"Command={launcher_command()} --play {shlex.quote(safe)}",
+        ]
+        tmp = target.with_suffix(".url.tmp")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp.replace(target)
+        return target
     lines = [
         "[Desktop Entry]",
         "Type=Application",
-        f"Name={name}",
-        f"Comment=Play {name} with Milso Launcher",
-        f"Exec={launcher_command()} --play {shlex.quote(name)}",
+        f"Name={safe}",
+        f"Comment=Play {safe} with Milso Launcher",
+        f"Exec={launcher_command()} --play {shlex.quote(safe)}",
         f"Icon={icon}" if icon else "Icon=applications-games",
         "Categories=Game;",
         "Terminal=false",

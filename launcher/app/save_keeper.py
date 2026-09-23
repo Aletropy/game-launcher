@@ -144,6 +144,11 @@ class SaveKeeper(QObject):
 
     def before_launch(self, game: Game) -> None:
         """Repair links and share the prefix before a game runs."""
+        from launcher import platform as _platform
+
+        if _platform.is_windows():
+            self._mirror_windows_saves(game)
+            return
         prefix = self.prefix_of(game)
         if prefix in self._busy_prefixes():
             # Another game is running in it; leave it exactly as it is.
@@ -151,6 +156,34 @@ class SaveKeeper(QObject):
         self._repair_links(prefix)
         if self._share_by_default:
             self.share(prefix)
+
+    def _mirror_windows_saves(self, game: Game) -> None:
+        """Auto-discover native save folders and mirror them into Saves/."""
+        try:
+            from launcher.services import win_saves as _winsaves
+        except ImportError:
+            return
+        try:
+            hits = _winsaves.discover(game.name, game.executable)
+        except (OSError, ValueError):
+            return
+        # Auto-confirm high/medium hits; low-confidence stays for manual review.
+        confirmed = [h.path for h in hits if h.confidence in ("high", "medium")]
+        if not confirmed:
+            return
+        try:
+            store = self._ctx.save_store
+            store.ensure()
+            stats = _winsaves.mirror_game(
+                game.name, confirmed, store.root, store.conflicts_root
+            )
+        except OSError as e:
+            self.error.emit("Saves", f"Could not mirror saves:\n{e}")
+            return
+        if stats.get("mirrored"):
+            self.status.emit(
+                f"Mirrored {stats['mirrored']} save file(s) for {game.name}."
+            )
 
     def _repair_links(self, prefix: Path) -> None:
         """Put back links Proton replaced, before the game runs.
@@ -187,6 +220,14 @@ class SaveKeeper(QObject):
             )
 
     def _after_game(self, name: str, _exit_code: int) -> None:
+        from launcher import platform as _platform
+
+        if _platform.is_windows():
+            game = self._ctx.games.get(name)
+            if game is not None:
+                self._mirror_windows_saves(game)
+            self.backup_if_due(f"after playing {name}")
+            return
         game = self._ctx.games.get(name)
         if game is not None and self._share_by_default:
             # A first run creates the prefix, and the game has just

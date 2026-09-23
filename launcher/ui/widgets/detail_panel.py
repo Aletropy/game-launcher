@@ -202,22 +202,25 @@ class GameDetailPanel(QWidget):
         )
         self._more_menu.addSeparator()
 
-        self._prefix_menu = QMenu("Prefix", self)
-        self._prefix_menu.addAction("Open folder", lambda: self._emit_tool("open"))
-        self._prefix_menu.addAction(
-            "Wine configuration", lambda: self._emit_tool("winecfg")
-        )
-        self._prefix_menu.addAction(
-            "Winetricks", lambda: self._emit_tool("winetricks")
-        )
-        self._prefix_menu.addAction(
-            "Wine file browser", lambda: self._emit_tool("explorer")
-        )
-        self._prefix_menu.addSeparator()
-        self._prefix_menu.addAction(
-            "Rebuild prefix…", lambda: self._emit_tool("rebuild")
-        )
-        self._more_menu.addMenu(self._prefix_menu)
+        from launcher import platform as _platform
+
+        if not _platform.is_windows():
+            self._prefix_menu = QMenu("Prefix", self)
+            self._prefix_menu.addAction("Open folder", lambda: self._emit_tool("open"))
+            self._prefix_menu.addAction(
+                "Wine configuration", lambda: self._emit_tool("winecfg")
+            )
+            self._prefix_menu.addAction(
+                "Winetricks", lambda: self._emit_tool("winetricks")
+            )
+            self._prefix_menu.addAction(
+                "Wine file browser", lambda: self._emit_tool("explorer")
+            )
+            self._prefix_menu.addSeparator()
+            self._prefix_menu.addAction(
+                "Rebuild prefix…", lambda: self._emit_tool("rebuild")
+            )
+            self._more_menu.addMenu(self._prefix_menu)
 
         self._saves_menu = QMenu("Saves", self)
         self._saves_menu.addAction(
@@ -279,12 +282,19 @@ class GameDetailPanel(QWidget):
             prefixes.describe(game.prefix, self._paths)
         )
         self._info_values["Saves"].setText(self._saves_summary(game))
+        from launcher import platform as _platform
+
+        is_win = _platform.is_windows()
         self._info_values["Proton"].setText(
             game.config.custom_proton_path or "Default"
         )
         self._info_values["App ID"].setText(
             game.config.override_app_id or game.config.game_id
         )
+        for hidden in (("Prefix", is_win), ("Proton", is_win), ("App ID", is_win)):
+            label, hide = hidden
+            self._info_values[label].setVisible(not hide)
+            self._info_labels[label].setVisible(not hide)
         self._info_values["Executable"].setText(game.executable)
         self._info_values["Tags"].setText(", ".join(game.tags))
         self._hide_action.setText("Unhide" if game.hidden else "Hide")
@@ -302,6 +312,10 @@ class GameDetailPanel(QWidget):
 
     def _saves_summary(self, game: Game) -> str:
         """Whether this game's prefix uses the shared save store."""
+        from launcher import platform as _platform
+
+        if _platform.is_windows():
+            return "auto-discovered native folders"
         if self._save_store is None:
             return ""
         try:

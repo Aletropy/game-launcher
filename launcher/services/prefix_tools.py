@@ -10,6 +10,7 @@ only a fallback.
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -353,4 +354,16 @@ def disk_usage(path: Path) -> int:
         ).stdout
         return int(output.split("\t", 1)[0])
     except (subprocess.SubprocessError, ValueError, OSError):
+        pass
+    # Windows has no du; walk the tree. Symlinks are not followed.
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path, followlinks=False):
+            for name in files:
+                try:
+                    total += (Path(root) / name).lstat().st_size
+                except OSError:
+                    continue
+    except OSError:
         return 0
+    return total

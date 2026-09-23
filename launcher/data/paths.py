@@ -29,17 +29,25 @@ class Paths:
     def default(cls) -> Paths:
         """The real locations, honouring the XDG variables."""
         import contextlib
-        import os
         import shutil
 
-        config_home = Path(
-            os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-        )
-        data_home = Path(
-            os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
-        )
-        config = config_home / "milso-launcher"
-        data = data_home / "milso-launcher"
+        from launcher import platform as _platform
+
+        if _platform.is_windows():
+            config = _platform.config_home()
+            # config_home() already includes the app name on Windows.
+            data = _platform.data_home()
+        else:
+            import os
+
+            config_home = Path(
+                os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+            )
+            data_home = Path(
+                os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share"
+            )
+            config = config_home / "milso-launcher"
+            data = data_home / "milso-launcher"
         # One-time migration from the old "launcher" name.
         legacy_config = config_home / "launcher"
         legacy_data = data_home / "launcher"

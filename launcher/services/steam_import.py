@@ -17,7 +17,29 @@ from pathlib import Path
 
 from launcher.services.importer import Candidate, scan_folder
 
+
 #: Where Steam keeps its data, in the order worth checking.
+def _default_roots() -> tuple[Path, ...]:
+    from launcher import platform as _platform
+
+    if _platform.is_windows():
+        import os
+
+        roots: list[Path] = []
+        for env in ("PROGRAMFILES(X86)", "PROGRAMFILES", "PROGRAMW6432"):
+            base = os.environ.get(env)
+            if base:
+                roots.append(Path(base) / "Steam")
+        # Custom library folders are read from libraryfolders.vdf anyway.
+        roots.append(Path.home() / "Steam")
+        return tuple(roots)
+    return (
+        Path.home() / ".local/share/Steam",
+        Path.home() / ".steam/steam",
+        Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam",
+    )
+
+
 _LIBRARY_ROOTS = (
     Path.home() / ".local/share/Steam",
     Path.home() / ".steam/steam",
@@ -95,7 +117,7 @@ def scan_steam_libraries(
 ) -> list[SteamGame]:
     """Installed Steam games with .exe guesses. Empty when Steam is absent."""
     games: list[SteamGame] = []
-    for root in _LIBRARY_ROOTS if roots is None else roots:
+    for root in _default_roots() if roots is None else roots:
         for steamapps in _library_folders(root):
             for app_id, name, installdir in _manifests(steamapps):
                 folder = steamapps / "common" / installdir
@@ -117,9 +139,7 @@ def scan_steam_libraries(
     return games
 
 
-def already_known(
-    game: SteamGame, known_names: set[str], known_executables: set[str]
-) -> bool:
+def already_known(game: SteamGame, known_names: set[str], known_executables: set[str]) -> bool:
     """Whether the library already holds this game, by name or .exe."""
     names = {n.casefold() for n in known_names}
     if game.name.casefold() in names:

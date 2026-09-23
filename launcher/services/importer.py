@@ -68,7 +68,9 @@ def _looks_like_noise(exe: Path) -> tuple[bool, str]:
     if _NOISE.search(exe.stem):
         return True, "looks like an installer or helper"
     parts = {p.casefold() for p in exe.parts}
-    if parts & _PREFIX_MARKERS:
+    from launcher import platform as _platform
+
+    if not _platform.is_windows() and parts & _PREFIX_MARKERS:
         return True, "inside a Wine prefix"
     if {p.casefold() for p in exe.parent.parts} & _SKIP_DIRS:
         return True, "in a redistributables folder"

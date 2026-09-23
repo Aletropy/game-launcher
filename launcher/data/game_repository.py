@@ -61,8 +61,32 @@ def config_from_data(name: str, data: dict[str, str | list[str]]) -> GameConfig:
     return config
 
 
+#: Proton/Wine-only keys, never written on the Windows sub-app.
+_WINDOWS_SKIP_KEYS = {
+    "GAMEID",
+    "CUSTOM_PROTON_PATH",
+    "OVERRIDE_APP_ID",
+    "GAME_PREFIX",
+    "PROTON_USE_WINE_SYNC",
+    "WINEDEBUG",
+    "RADV_PERFTEST",
+    "PULSE_LATENCY_MSEC",
+    "VKD3D_CONFIG",
+    "ADDITIONAL_DLLS",
+    "GAMESCOPE_W",
+    "GAMESCOPE_H",
+    "GAMESCOPE_W_OUT",
+    "GAMESCOPE_H_OUT",
+    "GAMESCOPE_ARGS",
+    "USE_GAMESCOPE",
+}
+
+
 def data_from_config(config: GameConfig) -> dict[str, str | list[str]]:
     """Serialise a GameConfig back to conf keys."""
+    from launcher import platform as _platform
+
+    windows = _platform.is_windows()
     data: dict[str, str | list[str]] = {"GAME_EXECUTABLE": config.executable}
     if config.name:
         data["GAME_NAME"] = config.name
@@ -70,17 +94,21 @@ def data_from_config(config: GameConfig) -> dict[str, str | list[str]]:
     for key, attr in _SCALARS.items():
         if key == "GAME_EXECUTABLE":
             continue
+        if windows and key in _WINDOWS_SKIP_KEYS:
+            continue
         value = getattr(config, attr)
         if value and value != getattr(_DEFAULTS, attr):
             data[key] = value
 
-    if config.use_gamescope:
+    if not windows and config.use_gamescope:
         data["USE_GAMESCOPE"] = "1"
         for key in ("GAMESCOPE_W", "GAMESCOPE_H", "GAMESCOPE_W_OUT",
                     "GAMESCOPE_H_OUT", "GAMESCOPE_ARGS"):
             data[key] = getattr(config, _SCALARS[key])
 
     for key, attr in _ARRAYS.items():
+        if windows and key == "ADDITIONAL_DLLS":
+            continue
         value = getattr(config, attr)
         if value:
             data[key] = value

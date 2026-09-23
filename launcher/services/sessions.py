@@ -12,7 +12,11 @@ app quit.
 from __future__ import annotations
 
 import contextlib
-import fcntl
+
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl; locking becomes best-effort.
+    fcntl = None  # type: ignore[assignment]
 import json
 import os
 from collections.abc import Iterator
@@ -62,6 +66,11 @@ def _locked(paths: Paths, exclusive: bool) -> Iterator[None]:
     The main app and detached watchers read-modify-write the same file;
     without a lock one writer's update silently discards the other's.
     """
+    if fcntl is None:
+        # Windows: no POSIX locks. The atomic tmp+replace write below
+        # still protects against torn files.
+        yield
+        return
     lock_path = _lock_path(paths)
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,9 +173,7 @@ def _safe_stem(name: str, started_iso: str) -> str:
     return f"{keep[:60]}-{stamp}"
 
 
-def write_pending(
-    paths: Paths, name: str, started: datetime, seconds: int
-) -> Path | None:
+def write_pending(paths: Paths, name: str, started: datetime, seconds: int) -> Path | None:
     """Record a finished session for later import. Returns the sidecar."""
     if seconds <= 0 or not name:
         return None

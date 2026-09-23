@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import signal
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import QObject, QProcess, QTimer, Signal
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from launcher.data.paths import Paths
+
+#: Only KEY=VALUE pairs become environment; anything else is ignored so a
+#: corrupt conf cannot inject flags or commands.
+_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 _SHELL = "bash"
 
@@ -184,6 +190,13 @@ class ProcessService(QObject):
         if self.is_running(game_name):
             return False
 
+        from launcher import platform as _platform
+
+        if _platform.is_windows():
+            return self._launch_windows(game_name)
+        return self._launch_linux(game_name)
+
+    def _launch_linux(self, game_name: str) -> bool:
         script = self._paths.launcher_script
         if not script.is_file():
             self.game_error.emit(game_name, f"Launcher script not found: {script}")
@@ -207,6 +220,56 @@ class ProcessService(QObject):
         self._last_seconds.pop(game_name, None)
         self._sessions[game_name] = _Session(process, time.monotonic(), started_wall)
         process.start(_SHELL, [str(script), game_name])
+        return self._after_start(game_name, process, started_wall)
+
+    def _launch_windows(self, game_name: str) -> bool:
+        """Run the .exe directly: no Proton, no Flatpak, no shell script."""
+        from launcher.domain.config import load as _load_conf
+
+        conf = self._paths.games_dir / f"{game_name}.conf"
+        if not conf.is_file():
+            self.game_error.emit(game_name, f"Config not found: {game_name}")
+            return False
+        data = _load_conf(conf)
+        exe = str(data.get("GAME_EXECUTABLE", "") or "").strip().strip('"')
+        if not exe:
+            self.game_error.emit(game_name, f"'{game_name}' has no executable configured.")
+            return False
+        args = build_windows_args(data.get("GAME_ARGS", []))
+        env = build_windows_env(data.get("extra_vars", []))
+        if not os.path.isfile(exe):
+            self.game_error.emit(game_name, f"Executable not found:\n{exe}")
+            return False
+
+        process = QProcess(self)
+        try:
+            workdir = str(Path(exe).parent)
+        except (OSError, ValueError):
+            workdir = str(self._paths.base)
+        process.setWorkingDirectory(workdir)
+        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        if env is not None:
+            process.setProcessEnvironment(env)
+        process.readyReadStandardOutput.connect(
+            lambda gn=game_name: self._on_output(gn)
+        )
+        process.finished.connect(
+            lambda code, status, gn=game_name: self._on_finished(gn, code)
+        )
+        process.errorOccurred.connect(
+            lambda err, gn=game_name: self._on_process_error(gn, err)
+        )
+
+        started_wall = datetime.now()
+        self._last_exit.pop(game_name, None)
+        self._last_seconds.pop(game_name, None)
+        self._sessions[game_name] = _Session(process, time.monotonic(), started_wall)
+        process.start(exe, args)
+        return self._after_start(game_name, process, started_wall)
+
+    def _after_start(
+        self, game_name: str, process: QProcess, started_wall: datetime
+    ) -> bool:
         if game_name not in self._sessions:
             # errorOccurred already fired synchronously; the entry was
             # cleaned up and no finished signal will follow.
@@ -331,9 +394,16 @@ class ProcessService(QObject):
             except (OSError, ValueError):
                 pass
             if session.process is not None:
+                from launcher import platform as _platform
+
+                what = (
+                    "the game executable"
+                    if _platform.is_windows()
+                    else "milso-launcher.sh"
+                )
                 self.game_error.emit(
                     game_name,
-                    f"Failed to start milso-launcher.sh: {session.process.errorString()}",
+                    f"Failed to start {what}: {session.process.errorString()}",
                 )
             self.game_finished.emit(game_name, -1)
         elif session.process is not None:
@@ -356,3 +426,26 @@ class ProcessService(QObject):
             except (OSError, ValueError):
                 pass
         self.game_finished.emit(game_name, exit_code)
+
+
+def build_windows_args(raw: object) -> list[str]:
+    """Normalise GAME_ARGS to a list. Never raises."""
+    if isinstance(raw, list):
+        return [str(a) for a in raw if str(a)]
+    if isinstance(raw, str) and raw.strip():
+        return [raw.strip()]
+    return []
+
+
+def build_windows_env(raw: object) -> QProcessEnvironment | None:
+    """System env plus validated extra_vars. None when there is nothing to add."""
+    items = raw if isinstance(raw, list) else []
+    pairs = [str(v).strip() for v in items if str(v).strip()]
+    pairs = [p for p in pairs if _ENV_RE.match(p) and "\0" not in p and len(p) < 4096]
+    if not pairs:
+        return None
+    env = QProcessEnvironment.systemEnvironment()
+    for pair in pairs:
+        key, _, value = pair.partition("=")
+        env.insert(key, value)
+    return env
