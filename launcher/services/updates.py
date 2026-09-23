@@ -21,6 +21,10 @@ from pathlib import Path
 
 #: The repository checked when the user has not configured another one.
 DEFAULT_REPO = "Aletropy/milso-launcher"
+#: Asset suffix per platform. Linux ships the one-run installer; Windows
+#: ships a zip with the payload plus setup-win.bat.
+PLATFORM_ASSETS = {"linux": (".run",), "windows": (".zip", "-win.zip")}
+WIN_ASSET_INFIX = "-win"
 #: How long a successful check suppresses the next automatic one.
 CHECK_INTERVAL = timedelta(hours=24)
 #: Hosts a release download may come from (API + release asset CDN).
@@ -39,6 +43,8 @@ class UpdateInfo:
     notes: str = ""
     size_bytes: int = 0
     page_url: str = ""
+    platform: str = ""
+    asset: str = ""
 
 
 def _parts(version: str) -> tuple[int, ...]:
@@ -116,32 +122,75 @@ def fetch_release(repo: str, *, timeout: int = 10) -> dict:
 
 def pick_run_asset(payload: dict, version: str) -> tuple[str, int]:
     """Pick the ``.run`` asset URL (and size) from a release payload."""
+    url, size, _ = pick_asset(payload, version, "linux")
+    return url, size
+
+
+def pick_asset(
+    payload: dict, version: str, platform: str | None = None
+) -> tuple[str, int, str]:
+    """Pick the installer asset URL, size and name for a platform.
+
+    ``platform`` is 'linux' or 'windows'; defaults to the running OS.
+    Raises ValueError when the release has no asset for it.
+    """
+    from launcher import platform as _platform
+
+    want = (platform or _platform.app_platform()).lower()
+    if want not in PLATFORM_ASSETS:
+        want = "linux"
     assets = payload.get("assets")
     if not isinstance(assets, list):
         raise ValueError("Release has no assets")
-    runs = [
-        a
-        for a in assets
-        if isinstance(a, dict)
-        and str(a.get("name", "")).endswith(".run")
-        and str(a.get("browser_download_url", "")).startswith("https://")
-    ]
-    if not runs:
-        raise ValueError(f"No .run asset in release {version or '?'}")
-    preferred = f"milso-launcher-{version}.run"
-    for asset in runs:
+    if want == "windows":
+        candidates = [
+            a
+            for a in assets
+            if isinstance(a, dict)
+            and str(a.get("name", "")).endswith(".zip")
+            and WIN_ASSET_INFIX in str(a.get("name", ""))
+            and str(a.get("browser_download_url", "")).startswith("https://")
+        ]
+        preferred = f"milso-launcher-{version}-win.zip"
+    else:
+        candidates = [
+            a
+            for a in assets
+            if isinstance(a, dict)
+            and str(a.get("name", "")).endswith(".run")
+            and str(a.get("browser_download_url", "")).startswith("https://")
+        ]
+        preferred = f"milso-launcher-{version}.run"
+    if not candidates:
+        raise ValueError(f"No installer asset for {want} in release {version or '?'}")
+    for asset in candidates:
         if str(asset.get("name", "")) == preferred:
-            return str(asset["browser_download_url"]), int(asset.get("size") or 0)
-    first = runs[0]
-    return str(first["browser_download_url"]), int(first.get("size") or 0)
+            return (
+                str(asset["browser_download_url"]),
+                int(asset.get("size") or 0),
+                str(asset["name"]),
+            )
+    first = candidates[0]
+    return (
+        str(first["browser_download_url"]),
+        int(first.get("size") or 0),
+        str(first.get("name")),
+    )
 
 
-def parse_release(payload: dict, current: str) -> UpdateInfo:
+def parse_release(
+    payload: dict, current: str, platform: str | None = None
+) -> UpdateInfo:
     """Turn a release payload into an UpdateInfo. Raises on bad payloads."""
+    from launcher import platform as _platform
+
+    want = (platform or _platform.app_platform()).lower()
+    if want not in PLATFORM_ASSETS:
+        want = "linux"
     latest = normalize_version(str(payload.get("tag_name", "")))
     if not latest or not is_newer(latest, current):
-        return UpdateInfo(available=False, version=latest)
-    url, size = pick_run_asset(payload, latest)
+        return UpdateInfo(available=False, version=latest, platform=want)
+    url, size, asset = pick_asset(payload, latest, want)
     notes = str(payload.get("body", "") or "")
     page_url = str(payload.get("html_url", "") or "")
     return UpdateInfo(
@@ -151,6 +200,8 @@ def parse_release(payload: dict, current: str) -> UpdateInfo:
         notes=notes,
         size_bytes=size,
         page_url=page_url,
+        platform=want,
+        asset=asset,
     )
 
 
@@ -187,13 +238,22 @@ def should_auto_check(auto_enabled: bool, last_check: str, **kwargs) -> bool:
 
 def update_cache_dir() -> Path:
     """Where downloaded installers wait for the user to install them."""
+    from launcher import platform as _platform
+
+    if _platform.is_windows():
+        return _platform.cache_home() / "milso-launcher" / "updates"
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     return base / "milso-launcher" / "updates"
 
 
-def installer_dest(version: str) -> Path:
+def installer_dest(version: str, platform: str | None = None) -> Path:
     """The cache path a downloaded installer for ``version`` lives at."""
+    from launcher import platform as _platform
+
+    want = (platform or _platform.app_platform()).lower()
     safe = normalize_version(version) or "unknown"
+    if want == "windows":
+        return update_cache_dir() / f"milso-launcher-{safe}-win.zip"
     return update_cache_dir() / f"milso-launcher-{safe}.run"
 
 
@@ -264,13 +324,45 @@ def relaunch_script(installer: Path, target: Path, pid: int) -> str:
     )
 
 
+def relaunch_script_win(installer: Path, target: Path, pid: int) -> str:
+    """A batch file that installs once this process (``pid``) is gone."""
+    setup = installer.parent / "setup-win.ps1"
+    return (
+        "@echo off\r\n"
+        f"REM Wait for PID {int(pid)} then install {installer.name}\r\n"
+        ":wait\r\n"
+        f'tasklist /FI "PID eq {int(pid)}"'
+        f' | find "{int(pid)}" >nul\r\n'
+        "if not errorlevel 1 (\r\n  timeout /t 1 /nobreak >nul\r\n"
+        "  goto wait\r\n)\r\n"
+        f'powershell -NoProfile -ExecutionPolicy Bypass -File "{setup}"'
+        f' -Target "{target}" -Yes\r\n'
+    )
+
+
 def schedule_install(installer: Path, target: Path) -> Path:
     """Run the installer detached once this process exits. Returns log path."""
     import shutil
     import subprocess
 
+    from launcher import platform as _platform
+
     log = update_cache_dir() / "update-install.log"
     log.parent.mkdir(parents=True, exist_ok=True)
+    if _platform.is_windows():
+        script = relaunch_script_win(installer, target, os.getpid())
+        bat = update_cache_dir() / "update-install.bat"
+        bat.write_text(script, encoding="utf-8")
+        cmd = shutil.which("cmd") or os.environ.get("COMSPEC") or "cmd"
+        with log.open("ab") as handle:
+            subprocess.Popen(  # noqa: S603 - resolved cmd, file just written
+                [cmd, "/c", str(bat)],
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+            )
+        return log
     script = relaunch_script(installer, target, os.getpid())
     shell = shutil.which("bash") or "/bin/bash"
     with log.open("ab") as handle:

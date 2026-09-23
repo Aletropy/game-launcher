@@ -13,7 +13,20 @@ import urllib.request
 from typing import Any
 
 TIMEOUT = 5.0
-_HEADERS = {"User-Agent": "MilsoLauncher-Friends/1", "Accept": "application/json"}
+
+
+def _headers() -> dict[str, str]:
+    from launcher import platform as _platform
+    from launcher.services.updates import current_version
+
+    try:
+        version = current_version()
+    except (OSError, ValueError):
+        version = "unknown"
+    return {
+        "User-Agent": f"MilsoLauncher-Friends/1 ({_platform.app_platform()}; {version})",
+        "Accept": "application/json",
+    }
 
 
 class FriendsError(Exception):
@@ -67,7 +80,7 @@ class FriendsClient:
         data = None if body is None else json.dumps(body).encode("utf-8")
         # The scheme was checked in check_url; only http(s) gets here.
         request = urllib.request.Request(  # noqa: S310
-            url, data=data, method=method, headers=_HEADERS
+            url, data=data, method=method, headers=_headers()
         )
         if data is not None:
             request.add_header("Content-Type", "application/json")
@@ -103,7 +116,13 @@ class FriendsClient:
     # -- account ---------------------------------------------------------
 
     def register(self, display_name: str) -> dict[str, Any]:
-        return self._call("POST", "/v1/register", {"display_name": display_name})
+        from launcher import platform as _platform
+
+        return self._call(
+            "POST",
+            "/v1/register",
+            {"display_name": display_name, "platform": _platform.app_platform()},
+        )
 
     def me(self) -> dict[str, Any]:
         return self._call("GET", "/v1/me")
@@ -150,7 +169,17 @@ class FriendsClient:
     # -- what you share --------------------------------------------------
 
     def set_presence(self, game_key: str, game_name: str) -> None:
-        self._call("PUT", "/v1/presence", {"game_key": game_key, "game_name": game_name})
+        from launcher import platform as _platform
+
+        self._call(
+            "PUT",
+            "/v1/presence",
+            {
+                "game_key": game_key,
+                "game_name": game_name,
+                "platform": _platform.app_platform(),
+            },
+        )
 
     def clear_presence(self) -> None:
         self._call("DELETE", "/v1/presence")

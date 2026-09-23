@@ -65,6 +65,12 @@ CREATE TABLE IF NOT EXISTS presence (
 );
 """
 
+_MIGRATIONS = (
+    "ALTER TABLE users ADD COLUMN platform TEXT NOT NULL DEFAULT 'linux'",
+    "ALTER TABLE presence ADD COLUMN platform TEXT NOT NULL DEFAULT 'linux'",
+    "ALTER TABLE sessions ADD COLUMN platform TEXT NOT NULL DEFAULT 'linux'",
+)
+
 _USER_VERSION = 1
 
 #: Presence outlives its last heartbeat by this long; launchers beat
@@ -103,6 +109,7 @@ class User:
     id: int
     display_name: str
     friend_code: str
+    platform: str = "linux"
 
 
 @dataclass(frozen=True)
@@ -114,6 +121,16 @@ class SessionIn:
     game_name: str
     started: int
     seconds: int
+    platform: str = "linux"
+
+
+#: Only these platform labels are stored; anything else becomes 'unknown'.
+KNOWN_PLATFORMS = {"linux", "windows"}
+
+
+def normalise_platform(raw: object) -> str:
+    text = str(raw or "").strip().lower()
+    return text if text in KNOWN_PLATFORMS else "unknown"
 
 
 class Store:
@@ -125,9 +142,20 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
+        self._migrate()
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if version < _USER_VERSION:
             self._conn.execute(f"PRAGMA user_version = {_USER_VERSION}")
+        self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add platform columns to older databases. Idempotent."""
+        for statement in _MIGRATIONS:
+            try:
+                self._conn.execute(statement)
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
         self._conn.commit()
 
     def close(self) -> None:
@@ -136,39 +164,42 @@ class Store:
 
     # -- accounts --------------------------------------------------------
 
-    def register(self, display_name: str) -> tuple[User, str]:
+    def register(self, display_name: str, platform: str = "linux") -> tuple[User, str]:
         """A new user and the token that proves it. The token is not kept."""
         token = secrets.token_urlsafe(32)
         now = int(time.time())
+        platform = normalise_platform(platform)
         with self._lock:
             while True:
                 code = _new_code()
                 try:
                     cursor = self._conn.execute(
                         "INSERT INTO users"
-                        " (display_name, friend_code, token_hash, created, last_seen)"
-                        " VALUES (?, ?, ?, ?, ?)",
-                        (display_name, code, hash_token(token), now, now),
+                        " (display_name, friend_code, token_hash, created, last_seen, platform)"
+                        " VALUES (?, ?, ?, ?, ?, ?)",
+                        (display_name, code, hash_token(token), now, now, platform),
                     )
                 except sqlite3.IntegrityError:
                     continue  # A code collision; draw again.
                 break
             self._conn.commit()
         assert cursor.lastrowid is not None
-        return User(cursor.lastrowid, display_name, code), token
+        return User(cursor.lastrowid, display_name, code, platform), token
 
     def authenticate(self, token: str) -> User | None:
         now = int(time.time())
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, display_name, friend_code FROM users WHERE token_hash = ?",
+                "SELECT id, display_name, friend_code,"
+                " COALESCE(platform, 'linux') AS platform FROM users"
+                " WHERE token_hash = ?",
                 (hash_token(token),),
             ).fetchone()
             if row is None:
                 return None
             self._conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, row["id"]))
             self._conn.commit()
-        return User(row["id"], row["display_name"], row["friend_code"])
+        return User(row["id"], row["display_name"], row["friend_code"], row["platform"])
 
     def rename(self, user_id: int, display_name: str) -> None:
         with self._lock:
@@ -303,9 +334,12 @@ class Store:
 
     # -- presence --------------------------------------------------------
 
-    def set_presence(self, user_id: int, game_key: str, game_name: str) -> None:
+    def set_presence(
+        self, user_id: int, game_key: str, game_name: str, platform: str = "linux"
+    ) -> None:
         """Say a user is playing. Keeps the start time across heartbeats."""
         now = int(time.time())
+        platform = normalise_platform(platform)
         with self._lock:
             row = self._conn.execute(
                 "SELECT game_key, since, expires FROM presence WHERE user_id = ?", (user_id,)
@@ -314,8 +348,9 @@ class Store:
             since = row["since"] if same else now
             self._conn.execute(
                 "INSERT OR REPLACE INTO presence"
-                " (user_id, game_key, game_name, since, expires) VALUES (?, ?, ?, ?, ?)",
-                (user_id, game_key, game_name, since, now + PRESENCE_TTL),
+                " (user_id, game_key, game_name, since, expires, platform)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, game_key, game_name, since, now + PRESENCE_TTL, platform),
             )
             self._conn.commit()
 
@@ -328,14 +363,23 @@ class Store:
 
     def upsert_sessions(self, user_id: int, sessions: Iterable[SessionIn]) -> int:
         rows = [
-            (user_id, s.client_session_id, s.game_key, s.game_name, s.started, s.seconds)
+            (
+                user_id,
+                s.client_session_id,
+                s.game_key,
+                s.game_name,
+                s.started,
+                s.seconds,
+                normalise_platform(s.platform),
+            )
             for s in sessions
         ]
         with self._lock:
             self._conn.executemany(
                 "INSERT OR REPLACE INTO sessions"
-                " (user_id, client_session_id, game_key, game_name, started, seconds)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                " (user_id, client_session_id, game_key, game_name, started,"
+                " seconds, platform)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             self._conn.commit()
@@ -375,7 +419,8 @@ class Store:
 
     def _presence(self, user_id: int, now: int) -> dict[str, Any] | None:
         row = self._conn.execute(
-            "SELECT game_key, game_name, since FROM presence"
+            "SELECT game_key, game_name, since,"
+            " COALESCE(platform, 'linux') AS platform FROM presence"
             " WHERE user_id = ? AND expires > ?",
             (user_id, now),
         ).fetchone()
@@ -383,12 +428,15 @@ class Store:
 
     def _profile(self, user_id: int, since: int | None, now: int) -> dict[str, Any]:
         row = self._conn.execute(
-            "SELECT id, display_name, last_seen FROM users WHERE id = ?", (user_id,)
+            "SELECT id, display_name, last_seen,"
+            " COALESCE(platform, 'linux') AS platform FROM users WHERE id = ?",
+            (user_id,),
         ).fetchone()
         return {
             "user_id": row["id"],
             "display_name": row["display_name"],
             "last_seen": row["last_seen"],
+            "platform": row["platform"],
             "presence": self._presence(user_id, now),
             "week_seconds": self._seconds(user_id, since) if since is not None else 0,
             "total_seconds": self._seconds(user_id, None),

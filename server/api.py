@@ -76,6 +76,12 @@ def _since(query: dict[str, str]) -> int | None:
         raise _bad("since must be a Unix timestamp") from None
 
 
+def _platform(raw: object) -> str:
+    from server.db import normalise_platform
+
+    return normalise_platform(raw)
+
+
 def _session(raw: object) -> SessionIn:
     if not isinstance(raw, dict):
         raise _bad("each session must be an object")
@@ -85,6 +91,7 @@ def _session(raw: object) -> SessionIn:
         game_name=_text(raw.get("game_name"), "game_name", MAX_KEY),
         started=_int(raw.get("started"), "started", 0, 2**40),
         seconds=_int(raw.get("seconds"), "seconds", 1, MAX_SESSION_SECONDS),
+        platform=_platform(raw.get("platform")),
     )
 
 
@@ -92,7 +99,10 @@ def _session(raw: object) -> SessionIn:
 
 
 def _register(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
-    user, token = store.register(_text(req.body.get("display_name"), "display_name", MAX_NAME))
+    user, token = store.register(
+        _text(req.body.get("display_name"), "display_name", MAX_NAME),
+        _platform(req.body.get("platform")),
+    )
     return HTTPStatus.CREATED, {
         "user_id": user.id,
         "display_name": user.display_name,
@@ -153,6 +163,7 @@ def _set_presence(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
         req.me.id,
         _text(req.body.get("game_key"), "game_key", MAX_KEY),
         _text(req.body.get("game_name"), "game_name", MAX_KEY),
+        _platform(req.body.get("platform")),
     )
     return HTTPStatus.NO_CONTENT, None
 

@@ -576,6 +576,9 @@ class FriendsService(QObject):
             return
         keys: dict[str, str] = {}
         payload = []
+        from launcher import platform as _platform
+
+        here = _platform.app_platform()
         for local_id, session in batch:
             if session.name not in keys:
                 keys[session.name] = self._key_for(session.name)
@@ -586,6 +589,7 @@ class FriendsService(QObject):
                     "game_name": session.name,
                     "started": int(session.started.timestamp()),
                     "seconds": session.seconds,
+                    "platform": here,
                 }
             )
         last_id = batch[-1][0]
