@@ -644,12 +644,22 @@ build_win_zip() {
     local win_staging="$STAGING_ROOT/$win_name"
     rm -rf "$win_staging"
     cp -r "$staging" "$win_staging" || return 1
-    # Windows needs the batch/PS installers at top level; drop nothing else.
+    # The installers live in installer/ in the repo, but users expect
+    # setup-win.bat at the zip root (INSTALL-WINDOWS.txt says so). Ship
+    # copies at the top level; the originals stay in installer/ and both
+    # resolve the payload dir at runtime, so either entry point works.
+    cp "$win_staging/installer/setup-win.bat" "$win_staging/setup-win.bat" || return 1
+    cp "$win_staging/installer/setup-win.ps1" "$win_staging/setup-win.ps1" || return 1
     # Line endings: installers must be CRLF-safe; git may store LF.
     if command -v unix2dos >/dev/null 2>&1; then
-        unix2dos "$win_staging/run-win.bat" "$win_staging/installer/setup-win.bat" 2>/dev/null
+        unix2dos "$win_staging/run-win.bat" "$win_staging/setup-win.bat" "$win_staging/installer/setup-win.bat" 2>/dev/null
     fi
     cp "$SOURCE_DIR/installer/INSTALL-WINDOWS.txt" "$win_staging/" 2>/dev/null || true
+    # The zip root must be installable on its own.
+    if [ ! -f "$win_staging/setup-win.bat" ] || [ ! -f "$win_staging/requirements.txt" ] || [ ! -f "$win_staging/run.py" ]; then
+        err "windows zip is missing its top-level installer or payload"
+        return 1
+    fi
 
     local zip="$DIST_DIR/$win_name.zip"
     rm -f "$zip"

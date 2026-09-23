@@ -241,7 +241,8 @@ def update_cache_dir() -> Path:
     from launcher import platform as _platform
 
     if _platform.is_windows():
-        return _platform.cache_home() / "milso-launcher" / "updates"
+        # cache_home() is already app-specific on Windows.
+        return _platform.cache_home() / "updates"
     base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     return base / "milso-launcher" / "updates"
 

@@ -37,6 +37,9 @@ class Paths:
             config = _platform.config_home()
             # config_home() already includes the app name on Windows.
             data = _platform.data_home()
+            # Legacy single-"launcher" dirs are siblings of the new ones.
+            legacy_config = config.parent / "launcher"
+            legacy_data = data.parent / "launcher"
         else:
             import os
 
@@ -48,10 +51,12 @@ class Paths:
             )
             config = config_home / "milso-launcher"
             data = data_home / "milso-launcher"
-        # One-time migration from the old "launcher" name.
-        legacy_config = config_home / "launcher"
-        legacy_data = data_home / "launcher"
+            # One-time migration from the old "launcher" name.
+            legacy_config = config_home / "launcher"
+            legacy_data = data_home / "launcher"
         for legacy, new in ((legacy_config, config), (legacy_data, data)):
+            if legacy == new:
+                continue
             if legacy.is_dir():
                 if not new.exists():
                     with contextlib.suppress(OSError):

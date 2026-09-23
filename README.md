@@ -13,11 +13,11 @@ Proton, no prefixes and no Flatpak. One codebase, one version number;
 One file, run once:
 
 ```bash
-./milso-launcher-2.4.0.run             # install, or upgrade in place
-./milso-launcher-2.4.0.run --target DIR
-./milso-launcher-2.4.0.run --yes       # no questions
-./milso-launcher-2.4.0.run --check     # dependencies only, changes nothing
-./milso-launcher-2.4.0.run --extract DIR
+./milso-launcher-2.4.1.run             # install, or upgrade in place
+./milso-launcher-2.4.1.run --target DIR
+./milso-launcher-2.4.1.run --yes       # no questions
+./milso-launcher-2.4.1.run --check     # dependencies only, changes nothing
+./milso-launcher-2.4.1.run --extract DIR
 ```
 
 It verifies its own payload, unpacks itself, finds an existing
@@ -126,8 +126,8 @@ byte-identical.
 To install elsewhere:
 
 ```bash
-tar xzf milso-launcher-2.4.0.tar.gz
-cd milso-launcher-2.4.0
+tar xzf milso-launcher-2.4.1.tar.gz
+cd milso-launcher-2.4.1
 ./install.sh
 ```
 

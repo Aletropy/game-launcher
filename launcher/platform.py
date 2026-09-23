@@ -37,27 +37,41 @@ def app_platform() -> str:
 def config_home() -> Path:
     override = os.environ.get("XDG_CONFIG_HOME")
     if override:
-        return Path(override)
+        base = Path(override)
+        if is_windows() and base.name.lower() != "milso-launcher":
+            return base / "milso-launcher"
+        return base
     if is_windows():
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / "milso-launcher"
+        raw = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(raw) / "milso-launcher"
     return Path.home() / ".config"
 
 
 def data_home() -> Path:
     override = os.environ.get("XDG_DATA_HOME")
     if override:
-        return Path(override)
+        base = Path(override)
+        if is_windows() and base.name.lower() != "milso-launcher":
+            return base / "milso-launcher"
+        return base
     if is_windows():
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "milso-launcher"
+        raw = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(raw) / "milso-launcher"
     return Path.home() / ".local" / "share"
 
 
 def cache_home() -> Path:
     override = os.environ.get("XDG_CACHE_HOME")
     if override:
-        return Path(override)
+        base = Path(override)
+        if is_windows():
+            # Keep the app-specific invariant: .../milso-launcher/cache.
+            if base.name.lower() == "cache" and base.parent.name.lower() == "milso-launcher":
+                return base
+            if base.name.lower() == "milso-launcher":
+                return base / "cache"
+            return base / "milso-launcher" / "cache"
+        return base
     if is_windows():
         return data_home() / "cache"
     return Path.home() / ".cache"

@@ -108,3 +108,97 @@ def register(*, test, qt_app, sandbox, pump):
         assert normalise_platform("evil-os") == "unknown"
         assert normalise_platform("") == "unknown"
         assert normalise_platform(None) == "unknown"
+
+    @test
+    def win_default_paths_do_not_raise_and_migrate_siblings() -> None:
+        """Regression: Paths.default() crashed on Windows (UnboundLocalError)."""
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from launcher import platform as _platform
+        from launcher.data.paths import Paths
+
+        with tempfile.TemporaryDirectory() as d:
+            roaming = Path(d) / "Roaming"
+            local = Path(d) / "Local"
+            (roaming / "launcher").mkdir(parents=True)
+            (roaming / "launcher" / "settings.json").write_text("{}")
+            (local / "launcher").mkdir(parents=True)
+            (local / "launcher" / "state.db").write_bytes(b"db")
+            env = {
+                "APPDATA": str(roaming),
+                "LOCALAPPDATA": str(local),
+                "XDG_CONFIG_HOME": "",
+                "XDG_DATA_HOME": "",
+                "XDG_CACHE_HOME": "",
+            }
+            with mock.patch.object(
+                _platform, "is_windows", return_value=True
+            ), mock.patch.dict(os.environ, env, clear=False):
+                # Blank XDG vars must not shadow the Windows locations.
+                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_DATA_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
+                paths = Paths.default()
+            assert paths.config == roaming / "milso-launcher"
+            assert paths.data == local / "milso-launcher"
+            assert (paths.config / "settings.json").is_file()
+            assert (paths.data / "state.db").is_file()
+
+    @test
+    def win_xdg_overrides_keep_the_app_suffix() -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        from launcher import platform as _platform
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(
+            _platform, "is_windows", return_value=True
+        ), mock.patch.dict(
+            os.environ,
+            {
+                "XDG_CONFIG_HOME": str(Path(d) / "cfg"),
+                "XDG_DATA_HOME": str(Path(d) / "data"),
+                "XDG_CACHE_HOME": str(Path(d) / "cache"),
+            },
+            clear=False,
+        ):
+                assert _platform.config_home().name == "milso-launcher"
+                assert _platform.data_home().name == "milso-launcher"
+                assert _platform.cache_home().parent.name == "milso-launcher"
+
+    @test
+    def win_update_cache_dir_is_not_doubled() -> None:
+        from unittest import mock
+
+        from launcher import platform as _platform
+        from launcher.services import updates
+
+        with mock.patch.object(_platform, "is_windows", return_value=True):
+            parts = updates.update_cache_dir().parts
+            assert parts.count("milso-launcher") == 1, updates.update_cache_dir()
+            assert updates.update_cache_dir().name == "updates"
+
+    @test
+    def win_zip_ships_a_top_level_installer() -> None:
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parent.parent.parent
+        assert (root / "installer" / "setup-win.bat").is_file()
+        assert (root / "installer" / "setup-win.ps1").is_file()
+        # Both entry points must resolve the payload dir instead of
+        # assuming the script folder is the payload root.
+        bat = (root / "installer" / "setup-win.bat").read_text(encoding="utf-8")
+        assert "..\\requirements.txt" in bat or ".." in bat
+        assert "requirements.txt" in bat
+        ps1 = (root / "installer" / "setup-win.ps1").read_text(encoding="utf-8")
+        assert 'Join-Path $src ".."' in ps1 or "requirements.txt" in ps1
+        # package.sh must promote the installers to the zip root.
+        pkg = (root / "package.sh").read_text(encoding="utf-8")
+        assert "setup-win.bat\" \"$win_staging/setup-win.bat\"" in pkg or (
+            "setup-win.bat" in pkg and "$win_staging/setup-win" in pkg
+        )

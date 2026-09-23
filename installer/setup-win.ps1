@@ -29,12 +29,24 @@ function Ensure-Python {
 if ($Check) { $null = Ensure-Python; Write-Host "Checks passed."; exit 0 }
 $py = Ensure-Python
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
+# The script may live at the zip root or in installer\.
+# Prefer the folder containing requirements.txt / run.py.
+$src = $here
+if (!(Test-Path (Join-Path $src "requirements.txt")) -and (Test-Path (Join-Path (Join-Path $src "..") "requirements.txt"))) {
+  $src = (Resolve-Path (Join-Path $src "..")).Path
+}
+if (!(Test-Path (Join-Path $src "requirements.txt"))) {
+  throw "requirements.txt not found in $src. Run setup-win.ps1 from the extracted milso-launcher-*-win folder (top level or installer\)."
+}
 if (!(Test-Path $Target)) { New-Item -ItemType Directory -Path $Target | Out-Null }
 $exclude = @(".venv", "Prefix", "prefixes", "backups", "Saves", "dist", ".git")
-Get-ChildItem -Path $here -Force | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
+Get-ChildItem -Path $src -Force | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
   Copy-Item -Path $_.FullName -Destination (Join-Path $Target $_.Name) -Recurse -Force
 }
 Set-Location $Target
+if (!(Test-Path (Join-Path $Target "requirements.txt"))) {
+  throw "Install copy is incomplete, requirements.txt missing in $Target."
+}
 if (!(Test-Path ".venv")) { & $py -m venv ".venv" }
 & ".\.venv\Scripts\python.exe" -m pip install --quiet --upgrade pip
 & ".\.venv\Scripts\python.exe" -m pip install --quiet -r requirements.txt

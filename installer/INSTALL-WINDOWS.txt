@@ -3,7 +3,8 @@ Milso Launcher - Windows sub-app
 
 One-click install:
   1. Extract milso-launcher-<version>-win.zip anywhere.
-  2. Double-click setup-win.bat (or: powershell setup-win.ps1).
+  2. Double-click setup-win.bat at the top level
+     (installer\setup-win.bat works too; or: powershell setup-win.ps1).
   3. Launch from Start Menu -> Milso Launcher, or run-win.bat.
 
 It installs Python 3.11+ via winget when missing, creates .venv,

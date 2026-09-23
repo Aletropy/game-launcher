@@ -15,10 +15,26 @@ goto args
 echo Installing Milso Launcher (Windows) into %TARGET%
 call :ensure_python || exit /b 1
 if not exist "%TARGET%" mkdir "%TARGET%"
+REM Payload source: this script may live at the zip root or in installer\.
+REM Prefer the folder containing requirements.txt / run.py.
+set "SRC=%~dp0"
+if not exist "%SRC%requirements.txt" (
+  if exist "%SRC%..\requirements.txt" set "SRC=%SRC%.."
+)
+if not exist "%SRC%requirements.txt" (
+  echo ERROR: requirements.txt not found in "%SRC%".
+  echo Run setup-win.bat from the extracted milso-launcher-*-win folder
+  echo ^(either the top level or installer\^).
+  exit /b 1
+)
 REM Copy payload (this folder) except .venv and user data.
-robocopy "%~dp0" "%TARGET%" /E /XD .venv Prefix prefixes backups Saves dist .git /XF *.pyc >nul
+robocopy "%SRC%" "%TARGET%" /E /XD .venv Prefix prefixes backups Saves dist .git /XF *.pyc >nul
 if errorlevel 8 exit /b 1
 cd /d "%TARGET%"
+if not exist "requirements.txt" (
+  echo ERROR: install copy is incomplete, requirements.txt missing in "%TARGET%".
+  exit /b 1
+)
 if not exist ".venv" (
   echo Creating virtualenv...
   python -m venv ".venv" || exit /b 1
