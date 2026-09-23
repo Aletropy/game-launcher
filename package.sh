@@ -40,8 +40,10 @@ head_() { printf '\n%s\n' "$1" >&2; }
 PAYLOAD=(
     launcher
     tests
+    server
     milso-launcher.sh
     install.sh
+    installer
     repair-prefix.sh
     migrate-from-flatpak-prefix.sh
     migrate-saves.sh
@@ -49,6 +51,7 @@ PAYLOAD=(
     steam_native_saves.sh
     run.py
     run.sh
+    run-win.bat
     requirements.txt
     pyproject.toml
     README.md
@@ -633,6 +636,36 @@ from launcher.app.main import build_window" 2>&1 | tail -5)
     fi
 }
 
+build_win_zip() {
+    local staging="$1" name="$2"
+    head_ "Building the Windows sub-app zip"
+
+    local win_name="$name-win"
+    local win_staging="$STAGING_ROOT/$win_name"
+    rm -rf "$win_staging"
+    cp -r "$staging" "$win_staging" || return 1
+    # Windows needs the batch/PS installers at top level; drop nothing else.
+    # Line endings: installers must be CRLF-safe; git may store LF.
+    if command -v unix2dos >/dev/null 2>&1; then
+        unix2dos "$win_staging/run-win.bat" "$win_staging/installer/setup-win.bat" 2>/dev/null
+    fi
+    cp "$SOURCE_DIR/installer/INSTALL-WINDOWS.txt" "$win_staging/" 2>/dev/null || true
+
+    local zip="$DIST_DIR/$win_name.zip"
+    rm -f "$zip"
+    if (cd "$STAGING_ROOT" && zip -qr "$zip" "$win_name"); then
+        ok "windows zip written"
+    else
+        err "could not build the windows zip (need 'zip')"
+        return 1
+    fi
+    if command -v sha256sum >/dev/null 2>&1; then
+        (cd "$DIST_DIR" && sha256sum "$win_name.zip" > "$win_name.sha256")
+        ok "windows zip checksummed"
+    fi
+    printf '%s\n' "$zip"
+}
+
 case "${1:-}" in
     --clean)
         rm -rf "$DIST_DIR"
@@ -673,6 +706,7 @@ ARCHIVE="$(build_archive "$STAGING" "$NAME" | tail -n1)" || exit 1
 test_install "$ARCHIVE" "$NAME" || exit 1
 INSTALLER="$(build_run_installer "$ARCHIVE" "$NAME" | tail -n1)" || exit 1
 test_run_installer "$INSTALLER" "$NAME" || exit 1
+WIN_ZIP="$(build_win_zip "$STAGING" "$NAME" | tail -n1)" || exit 1
 SOURCE_ARCHIVE="$(build_source_archive "$NAME" | tail -n1)" || exit 1
 BUNDLE="$(build_bundle "$NAME" "$INSTALLER" "${SOURCE_ARCHIVE:-}" | tail -n1)" || exit 1
 test_bundle "$BUNDLE" "$NAME" || exit 1
@@ -692,6 +726,9 @@ ${C_OK}Done.${C_OFF}
   $ARCHIVE  ($(du -h "$ARCHIVE" | cut -f1))
       plain archive, if you would rather unpack it yourself
           tar xzf $(basename "$ARCHIVE") && cd $NAME && ./install.sh
+
+  $WIN_ZIP  ($(du -h "$WIN_ZIP" | cut -f1))
+      windows sub-app zip: extract and run setup-win.bat
 EOF
 
 if [ -n "${SOURCE_ARCHIVE:-}" ] && [ -f "$SOURCE_ARCHIVE" ]; then

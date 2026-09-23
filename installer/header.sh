@@ -210,7 +210,7 @@ back_up_existing() {
     # Only the application files are archived; user data is untouched by
     # the upgrade, so backing it up would just waste space.
     local items=() item
-    for item in launcher tests *.sh run.py requirements.txt pyproject.toml README.md; do
+    for item in launcher tests server installer *.sh run.py run-win.bat requirements.txt pyproject.toml README.md; do
         [ -e "$target/$item" ] && items+=("$item")
     done
     [ "${#items[@]}" -gt 0 ] || return 0
@@ -258,10 +258,10 @@ sync_tree() {
     ok "application source"
 
     local item
-    for item in tests milso-launcher.sh install.sh repair-prefix.sh \
+    for item in tests server installer milso-launcher.sh install.sh repair-prefix.sh \
                 migrate-from-flatpak-prefix.sh migrate-saves.sh \
                 steam_flatpak_saves.sh steam_native_saves.sh \
-                run.py run.sh requirements.txt pyproject.toml README.md icon.png
+                run.py run.sh run-win.bat requirements.txt pyproject.toml README.md icon.png
     do
         [ -e "$source/$item" ] || continue
         rm -rf "$target/$item"

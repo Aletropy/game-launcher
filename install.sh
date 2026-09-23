@@ -55,22 +55,107 @@ find_python() {
     return 1
 }
 
+detect_distro() {
+    # ID from /etc/os-release, lowercased: debian, ubuntu, fedora, arch...
+    if [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release 2>/dev/null
+        printf '%s' "${ID:-unknown}" | tr '[:upper:]' '[:lower:]'
+    else
+        printf 'unknown'
+    fi
+}
+
+python_install_hint() {
+    case "$(detect_distro)" in
+        ubuntu|debian|linuxmint|pop|raspbian)
+            printf 'sudo apt update && sudo apt install -y python3 python3-venv python3-pip'
+            ;;
+        fedora|rhel|centos|rocky|alma*)
+            printf 'sudo dnf install -y python3 python3-pip'
+            ;;
+        arch|manjaro|endeavouros|garuda|cachyos)
+            printf 'sudo pacman -S --needed python python-pip'
+            ;;
+        opensuse*|sles)
+            printf 'sudo zypper install -y python3 python3-venv python3-pip'
+            ;;
+        *)
+            printf 'Install python3 (>=3.11) with venv from your package manager'
+            ;;
+    esac
+}
+
+ensure_python() {
+    # One-click bootstrap: try to install Python when it is missing.
+    # Respects ASSUME_YES/YES env used by the .run installer; otherwise asks.
+    if find_python >/dev/null 2>&1; then
+        return 0
+    fi
+    local hint distro
+    distro="$(detect_distro)"
+    hint="$(python_install_hint)"
+    warn "python 3.$PYTHON_MIN_MINOR or newer not found ($distro)"
+    note "$hint"
+    local agree=0
+    if [ "${ASSUME_YES:-0}" = "1" ] || [ "${YES:-0}" = "1" ]; then
+        agree=1
+    elif [ -t 0 ]; then
+        local reply
+        read -r -p "  Install Python now with the system package manager? [Y/n] " reply
+        case "${reply:-y}" in
+            [Yy]*|"") agree=1 ;;
+        esac
+    fi
+    [ "$agree" -eq 1 ] || return 1
+    case "$distro" in
+        ubuntu|debian|linuxmint|pop|raspbian)
+            sudo apt update && sudo apt install -y python3 python3-venv python3-pip
+            ;;
+        fedora|rhel|centos|rocky|alma*)
+            sudo dnf install -y python3 python3-pip
+            ;;
+        arch|manjaro|endeavouros|garuda|cachyos)
+            sudo pacman -S --needed --noconfirm python python-pip
+            ;;
+        opensuse*|sles)
+            sudo zypper install -y --no-confirm python3 python3-venv python3-pip
+            ;;
+        *)
+            err "automatic install is not supported on '$distro'; run: $hint"
+            return 1
+            ;;
+    esac
+    if find_python >/dev/null 2>&1; then
+        ok "python installed"
+        return 0
+    fi
+    err "python is still missing after the install attempt"
+    return 1
+}
+
 check_dependencies() {
     head_ "Checking dependencies"
 
-    if PYTHON="$(find_python)"; then
+    if ! ensure_python; then
+        err "python 3.$PYTHON_MIN_MINOR or newer not found"
+        note "$(python_install_hint)"
+        FAILED=1
+        PYTHON="python3"
+    elif PYTHON="$(find_python)"; then
         ok "python $("$PYTHON" -c 'import platform; print(platform.python_version())') ($PYTHON)"
     else
         err "python 3.$PYTHON_MIN_MINOR or newer not found"
-        note "Install python3 from your distribution's package manager."
+        note "$(python_install_hint)"
         FAILED=1
+        PYTHON="python3"
     fi
 
     if "$PYTHON" -c "import venv" 2>/dev/null; then
         ok "python venv module"
     else
         err "the python venv module is missing"
-        note "On Debian/Ubuntu: sudo apt install python3-venv"
+        note "$(python_install_hint)"
         FAILED=1
     fi
 
