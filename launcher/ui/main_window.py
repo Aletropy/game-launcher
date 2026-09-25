@@ -800,6 +800,41 @@ class MainWindow(QMainWindow):
             f"Still playing: {', '.join(names)} \u2014 timer recovered.", 10000
         )
 
+    def offer_changelog(self) -> None:
+        """Show What's new once, on the first startup after an update.
+
+        Called after the window is on screen, never from __init__: this
+        opens a modal dialog, and doing so during construction blocks
+        before the window is even visible.
+        """
+        from launcher.services import changelog as _changelog
+        from launcher.services import updates
+        from launcher.ui.dialogs.changelog_dialog import ChangelogDialog
+
+        current = updates.current_version()
+        stored = self._ctx.settings.get_str("last_seen_version").strip()
+        if _changelog.should_show(stored, current):
+            pending = _changelog.take_pending(self._ctx.paths.data)
+            notes = pending.notes if pending is not None else ""
+            page = pending.page_url if pending is not None else ""
+            if not notes:
+                repo = (
+                    self._ctx.settings.get_str("update_repo").strip()
+                    or updates.DEFAULT_REPO
+                )
+                fetched = _changelog.fetch_notes_for(repo, current)
+                if fetched is not None:
+                    notes, page = fetched.notes, fetched.page_url
+            if not page:
+                repo = (
+                    self._ctx.settings.get_str("update_repo").strip()
+                    or updates.DEFAULT_REPO
+                )
+                page = _changelog.releases_page(repo)
+            ChangelogDialog(current, notes, page, self).exec()
+        if current and current != "unknown":
+            self._ctx.settings.set("last_seen_version", current)
+
     def _show_update_badge(self, info: UpdateInfo) -> None:
         self._pending_update = info
         self._update_btn.setText(f"\u2193 {info.version}")
@@ -885,6 +920,13 @@ class MainWindow(QMainWindow):
         ) is not Answer.YES:
             return
         updates.schedule_install(dest, self._ctx.paths.base)
+        from launcher.services import changelog as _changelog
+
+        # The notes travel with the install so What's new shows them
+        # on the next startup, even without a network connection.
+        _changelog.stash_pending(
+            self._ctx.paths.data, info.version, info.notes, info.page_url
+        )
         self.statusBar().showMessage(f"Installing version {info.version}\u2026", 6000)
         self._quitting = True
         app = QApplication.instance()

@@ -109,6 +109,10 @@ class Preferences:
         return self._settings.get_str("update_skipped_version").strip()
 
     @property
+    def last_seen_version(self) -> str:
+        return self._settings.get_str("last_seen_version").strip()
+
+    @property
     def update_feed_url(self) -> str:
         """Legacy JSON feed setting. Unused since GitHub Releases took over."""
         return self._settings.get_str("update_feed_url").strip()

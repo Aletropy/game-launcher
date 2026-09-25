@@ -427,13 +427,9 @@ class SettingsDialog(QDialog):
         setup = _Card("Setup")
         self._discord_enabled = QCheckBox("Show what I'm playing in Discord")
         setup.form.addRow(self._discord_enabled)
-        self._discord_app_id = QLineEdit()
-        self._discord_app_id.setPlaceholderText("Discord Application ID")
-        setup.form.addRow("Application ID", self._discord_app_id)
         setup.form.addRow(
             _hint(
-                "Discord Developer Portal → Applications → your app → "
-                "General Information → Application ID. Paste it here. "
+                "Uses the shared Milso Launcher Discord app. "
                 "Requires the Discord desktop app running."
             )
         )
@@ -564,6 +560,10 @@ class SettingsDialog(QDialog):
         self._download_btn.setEnabled(False)
         self._download_btn.clicked.connect(self._open_update_url)
         update_row.addWidget(self._download_btn)
+        news_btn = QPushButton("What's new")
+        news_btn.setToolTip("Show the release notes of this version again")
+        news_btn.clicked.connect(self._show_changelog)
+        update_row.addWidget(news_btn)
         update_row.addStretch()
         about.form.addRow(update_row)
         self._auto_check = QCheckBox("Check automatically on startup")
@@ -633,7 +633,6 @@ class SettingsDialog(QDialog):
         self._server_url.setText(settings.get_str("friends_server_url"))
         self._display_name.setText(self._ctx.friends.account.display_name)
         self._discord_enabled.setChecked(settings.get_bool("discord_enabled"))
-        self._discord_app_id.setText(settings.get_str("discord_app_id"))
         self._discord_details.setText(settings.get_str("discord_details"))
         self._discord_state.setText(settings.get_str("discord_state"))
         mode = settings.get_str("discord_large_mode") or "game-key"
@@ -674,7 +673,6 @@ class SettingsDialog(QDialog):
             or str(DEFAULTS["friends_server_url"]),
             "friends_share_presence": self._share_presence.isChecked(),
             "discord_enabled": self._discord_enabled.isChecked(),
-            "discord_app_id": self._discord_app_id.text().strip(),
             "discord_details": self._discord_details.text().strip(),
             "discord_state": self._discord_state.text().strip(),
             "discord_large_mode": self._discord_large_mode.currentData() or "game-key",
@@ -779,6 +777,23 @@ class SettingsDialog(QDialog):
             url = self._pending_update.page_url or self._pending_update.url
             if url:
                 QDesktopServices.openUrl(QUrl(url))
+
+    def _show_changelog(self) -> None:
+        """Reopen the release notes of the running version, on demand."""
+        from launcher.services import changelog as _changelog
+        from launcher.services import updates
+        from launcher.ui.dialogs.changelog_dialog import ChangelogDialog
+
+        current = updates.current_version()
+        repo = self._repo_edit.text().strip() or updates.DEFAULT_REPO
+        pending = _changelog.peek_pending(self._ctx.paths.data)
+        notes = pending.notes if pending is not None else ""
+        page = pending.page_url if pending is not None else ""
+        if not notes:
+            fetched = _changelog.fetch_notes_for(repo, current)
+            if fetched is not None:
+                notes, page = fetched.notes, fetched.page_url
+        ChangelogDialog(current, notes, page or _changelog.releases_page(repo), self).exec()
 
     # -- API key check -------------------------------------------------
 

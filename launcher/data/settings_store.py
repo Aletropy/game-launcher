@@ -68,6 +68,8 @@ DEFAULTS: dict[str, Any] = {
     "update_auto_check": True,
     "update_last_check": "",
     "update_skipped_version": "",
+    # The version last started; when it changes, What's new is shown once.
+    "last_seen_version": "",
     # Legacy JSON release feed (pre-GitHub). Kept so downgrades do not
     # discard it; nothing reads it any more.
     "update_feed_url": "",
