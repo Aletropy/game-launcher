@@ -18,6 +18,7 @@ from launcher.data.settings_store import SettingsStore
 from launcher.data.state_store import StateStore
 from launcher.services.artwork import ArtworkCleaner, ArtworkService
 from launcher.services.backups import BackupService
+from launcher.services.discord import DiscordService
 from launcher.services.friends import FriendsService
 from launcher.services.game_log import GameLogStore
 from launcher.services.prefix_tools import PrefixToolsService
@@ -43,6 +44,7 @@ class AppContext:
     prefix_tools: PrefixToolsService
     sgdb: SgdbClient
     friends: FriendsService
+    discord: DiscordService
 
     @classmethod
     def create(
@@ -103,8 +105,9 @@ class AppContext:
             backups=BackupService(paths),
             prefix_tools=PrefixToolsService(paths),
             sgdb=SgdbClient(settings),
-            # Idle until start(); Offline Mode keeps it that way.
+            # Idle until start(); off until an Application ID is set.
             friends=FriendsService(paths, settings, state, games, processes),
+            discord=DiscordService(settings, processes, state=state),
         )
 
     @classmethod
@@ -121,6 +124,8 @@ class AppContext:
         reason.
         """
         self.friends.stop()
+        with contextlib.suppress(AttributeError, RuntimeError):
+            self.discord.stop()
         with contextlib.suppress(AttributeError, RuntimeError):
             self.processes.detach_all()
         try:

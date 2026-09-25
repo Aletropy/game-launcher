@@ -57,6 +57,7 @@ _PAGES = (
     ("saves", "Saves & backups", "One set of saves for every prefix, kept safe."),
     ("data", "Data", "What the launcher has recorded, and clearing it."),
     ("friends", "Friends", "Share play time with friends, or stay offline."),
+    ("discord", "Discord", "Show what you're playing in Discord."),
     ("prompts", "Prompts", "Questions you asked not to be asked again."),
     ("about", "About", "Version and where everything lives."),
 )
@@ -136,6 +137,7 @@ class SettingsDialog(QDialog):
             "saves": self._build_saves,
             "data": self._build_data,
             "friends": self._build_friends,
+            "discord": self._build_discord,
             "prompts": self._build_prompts,
             "about": self._build_about,
         }
@@ -417,6 +419,126 @@ class SettingsDialog(QDialog):
         profile.form.addRow(self._profile_status)
         return self._column(mode, server, profile)
 
+    def _build_discord(self) -> QWidget:
+        from PySide6.QtWidgets import QComboBox
+
+        from launcher.services.discord import LARGE_MODES, TEMPLATE_VARS
+
+        setup = _Card("Setup")
+        self._discord_enabled = QCheckBox("Show what I'm playing in Discord")
+        setup.form.addRow(self._discord_enabled)
+        self._discord_app_id = QLineEdit()
+        self._discord_app_id.setPlaceholderText("Discord Application ID")
+        setup.form.addRow("Application ID", self._discord_app_id)
+        setup.form.addRow(
+            _hint(
+                "Discord Developer Portal → Applications → your app → "
+                "General Information → Application ID. Paste it here. "
+                "Requires the Discord desktop app running."
+            )
+        )
+        self._discord_status = _hint("")
+        setup.form.addRow(self._discord_status)
+
+        text = _Card("What it shows")
+        self._discord_details = QLineEdit()
+        self._discord_details.setPlaceholderText("Playing {game}")
+        text.form.addRow("Details", self._discord_details)
+        self._discord_state = QLineEdit()
+        self._discord_state.setPlaceholderText("via Milso Launcher")
+        text.form.addRow("State", self._discord_state)
+        self._discord_large_mode = QComboBox()
+        for mode in LARGE_MODES:
+            self._discord_large_mode.addItem(mode, mode)
+        self._discord_large_mode.setToolTip(
+            "game-key: per-game cover uploaded under the asset key below; "
+            "static: one fixed image; url-template: hosted cover URL."
+        )
+        text.form.addRow("Cover source", self._discord_large_mode)
+        self._discord_large_static = QLineEdit()
+        self._discord_large_static.setPlaceholderText("milso-logo")
+        text.form.addRow("Static image key", self._discord_large_static)
+        self._discord_large_template = QLineEdit()
+        self._discord_large_template.setPlaceholderText("https://example.com/{game_key}.png")
+        text.form.addRow("Cover URL template", self._discord_large_template)
+        self._discord_large_text = QLineEdit()
+        self._discord_large_text.setPlaceholderText("{game}")
+        text.form.addRow("Cover tooltip", self._discord_large_text)
+        self._discord_small_key = QLineEdit()
+        self._discord_small_key.setPlaceholderText("optional small image key")
+        text.form.addRow("Small image key", self._discord_small_key)
+        self._discord_small_text = QLineEdit()
+        self._discord_small_text.setPlaceholderText("{elapsed}")
+        text.form.addRow("Small tooltip", self._discord_small_text)
+        self._discord_show_elapsed = QCheckBox("Show elapsed play time")
+        text.form.addRow(self._discord_show_elapsed)
+        text.form.addRow(_hint(f"Variables: {', '.join(TEMPLATE_VARS)}."))
+        self._discord_key_hint = _hint("")
+        text.form.addRow(self._discord_key_hint)
+
+        idle = _Card("When idle")
+        self._discord_idle_enabled = QCheckBox("Show something when nothing runs")
+        idle.form.addRow(self._discord_idle_enabled)
+        self._discord_idle_text = QLineEdit()
+        self._discord_idle_text.setPlaceholderText("Browsing library")
+        idle.form.addRow("Idle text", self._discord_idle_text)
+
+        self._discord_preview = _hint("")
+        preview = _Card("Preview")
+        preview.form.addRow(self._discord_preview)
+
+        for widget in (
+            self._discord_details,
+            self._discord_state,
+            self._discord_large_text,
+            self._discord_small_text,
+            self._discord_small_key,
+            self._discord_large_template,
+            self._discord_idle_text,
+        ):
+            widget.textChanged.connect(self._refresh_discord_preview)
+        self._discord_large_mode.currentIndexChanged.connect(self._refresh_discord_preview)
+        return self._column(setup, text, idle, preview)
+
+    def _refresh_discord_preview(self) -> None:
+        from launcher.services.discord import format_template, game_key
+
+        name = "Example Game"
+        try:
+            games = self._ctx.games.list_games()
+            if games:
+                name = games[0].name
+        except (AttributeError, OSError, RuntimeError):
+            pass
+        key = game_key(name)
+        details = format_template(
+            self._discord_details.text() or "Playing {game}",
+            game=name, key=key, elapsed=3723, total=7260, platform="linux",
+        )
+        state = format_template(
+            self._discord_state.text() or "",
+            game=name, key=key, elapsed=3723, total=7260, platform="linux",
+        )
+        mode = self._discord_large_mode.currentData() or "game-key"
+        if mode == "static":
+            image = self._discord_large_static.text() or "milso-logo"
+        elif mode == "url-template":
+            template = self._discord_large_template.text()
+            if template:
+                image = format_template(
+                    template, game=name, key=key, elapsed=0, total=0, platform=""
+                )
+            else:
+                image = key
+        else:
+            image = key
+        self._discord_preview.setText(
+            f"{details} — {state}\nCover: {image} (upload it under this key)."
+        )
+        self._discord_key_hint.setText(
+            f"Upload '{name}' cover as asset key '{key}' (fallback: milso-logo)."
+        )
+
     def _build_prompts(self) -> QWidget:
         card = _Card("Ask me again")
         card.form.addRow(_hint("Tick a prompt to start being asked again."))
@@ -510,6 +632,22 @@ class SettingsDialog(QDialog):
         self._share_presence.setChecked(settings.get_bool("friends_share_presence"))
         self._server_url.setText(settings.get_str("friends_server_url"))
         self._display_name.setText(self._ctx.friends.account.display_name)
+        self._discord_enabled.setChecked(settings.get_bool("discord_enabled"))
+        self._discord_app_id.setText(settings.get_str("discord_app_id"))
+        self._discord_details.setText(settings.get_str("discord_details"))
+        self._discord_state.setText(settings.get_str("discord_state"))
+        mode = settings.get_str("discord_large_mode") or "game-key"
+        index = self._discord_large_mode.findData(mode)
+        self._discord_large_mode.setCurrentIndex(index if index >= 0 else 0)
+        self._discord_large_static.setText(settings.get_str("discord_large_static"))
+        self._discord_large_template.setText(settings.get_str("discord_large_template"))
+        self._discord_large_text.setText(settings.get_str("discord_large_text"))
+        self._discord_small_key.setText(settings.get_str("discord_small_key"))
+        self._discord_small_text.setText(settings.get_str("discord_small_text"))
+        self._discord_show_elapsed.setChecked(settings.get_bool("discord_show_elapsed"))
+        self._discord_idle_enabled.setChecked(settings.get_bool("discord_idle_enabled"))
+        self._discord_idle_text.setText(settings.get_str("discord_idle_text"))
+        self._refresh_discord_preview()
         # These flags mean "silenced", so the checkbox is the inverse.
         for key, box in self._prompt_boxes.items():
             box.setChecked(not settings.get_bool(key))
@@ -535,6 +673,19 @@ class SettingsDialog(QDialog):
             "friends_server_url": self._server_url.text().strip()
             or str(DEFAULTS["friends_server_url"]),
             "friends_share_presence": self._share_presence.isChecked(),
+            "discord_enabled": self._discord_enabled.isChecked(),
+            "discord_app_id": self._discord_app_id.text().strip(),
+            "discord_details": self._discord_details.text().strip(),
+            "discord_state": self._discord_state.text().strip(),
+            "discord_large_mode": self._discord_large_mode.currentData() or "game-key",
+            "discord_large_static": self._discord_large_static.text().strip(),
+            "discord_large_template": self._discord_large_template.text().strip(),
+            "discord_large_text": self._discord_large_text.text().strip(),
+            "discord_small_key": self._discord_small_key.text().strip(),
+            "discord_small_text": self._discord_small_text.text().strip(),
+            "discord_show_elapsed": self._discord_show_elapsed.isChecked(),
+            "discord_idle_enabled": self._discord_idle_enabled.isChecked(),
+            "discord_idle_text": self._discord_idle_text.text().strip(),
         }
         for key, box in self._prompt_boxes.items():
             values[key] = not box.isChecked()

@@ -106,5 +106,7 @@ def main() -> None:
     QTimer.singleShot(0, window.announce_recovered_sessions)
     # Does nothing in Offline Mode, the default.
     QTimer.singleShot(0, context.friends.start)
+    # Does nothing until enabled with an Application ID in Settings.
+    QTimer.singleShot(0, context.discord.start)
 
     sys.exit(app.exec())

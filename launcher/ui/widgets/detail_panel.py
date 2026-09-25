@@ -59,6 +59,8 @@ class GameDetailPanel(QWidget):
     #: Open the backups, pointed at this game's folders.
     backups_requested = Signal(str)
     clear_data_requested = Signal(str)
+    #: game name; the window opens the folder holding its executable.
+    game_folder_requested = Signal(str)
     #: game name, dropped image path
     artwork_dropped = Signal(str, str)
 
@@ -197,6 +199,9 @@ class GameDetailPanel(QWidget):
         # the parent menu still points at it -- the entry then opens an
         # empty submenu and none of its actions can be reached.
         self._more_menu = QMenu(self)
+        self._more_menu.addAction(
+            "Open game folder", lambda: self._emit_named(self.game_folder_requested)
+        )
         self._more_menu.addAction(
             "Artwork\u2026", lambda: self._emit_named(self.artwork_requested)
         )

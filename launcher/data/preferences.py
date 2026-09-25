@@ -80,6 +80,16 @@ class Preferences:
     def friends_share_presence(self) -> bool:
         return self._settings.get_bool("friends_share_presence")
 
+    # -- discord ----------------------------------------------------------
+
+    @property
+    def discord_enabled(self) -> bool:
+        return self._settings.get_bool("discord_enabled")
+
+    @property
+    def discord_app_id(self) -> str:
+        return self._settings.get_str("discord_app_id").strip()
+
     # -- updates ----------------------------------------------------------
 
     @property

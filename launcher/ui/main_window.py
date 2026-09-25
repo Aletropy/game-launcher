@@ -290,6 +290,7 @@ class MainWindow(QMainWindow):
         detail.backups_requested.connect(self._open_backups)
         detail.artwork_dropped.connect(self._artwork_dropped)
         detail.clear_data_requested.connect(self._clear_data)
+        detail.game_folder_requested.connect(self._open_game_folder)
 
         journal = self._journal
         journal.play_requested.connect(self._launch_game)
@@ -571,6 +572,21 @@ class MainWindow(QMainWindow):
             warn(self, "Desktop Shortcut", str(e))
             return
         self.statusBar().showMessage(f"Desktop shortcut created: {path.name}.", 6000)
+
+    def _open_game_folder(self, name: str) -> None:
+        """Open the folder holding the game's executable."""
+        from launcher.services.discord import game_dir
+        from launcher.services.prefix_tools import open_path
+
+        game = self._lib.game(name)
+        if game is None:
+            return
+        folder = game_dir(game.executable)
+        if not folder:
+            warn(self, "Open Game Folder", f"'{name}' has no executable configured.")
+            return
+        if not open_path(Path(folder)):
+            warn(self, "Open Game Folder", f"The folder does not exist:\n{folder}")
 
     def _remove_game(self, name: str) -> None:
         if self._ctx.settings.get_bool("confirm_remove"):

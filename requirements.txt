@@ -1,1 +1,2 @@
 PySide6>=6.6.0
+pypresence>=4.3.0
