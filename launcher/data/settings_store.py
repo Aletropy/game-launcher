@@ -51,7 +51,7 @@ DEFAULTS: dict[str, Any] = {
     "friends_share_presence": True,
     # Discord Rich Presence. Off until an Application ID is set.
     "discord_enabled": False,
-    "discord_app_id": "",
+    "discord_app_id": "1553159875318517882",
     "discord_details": "Playing {game}",
     "discord_state": "via Milso Launcher",
     "discord_large_mode": "game-key",
