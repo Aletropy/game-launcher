@@ -239,6 +239,11 @@ def should_auto_check(auto_enabled: bool, last_check: str, **kwargs) -> bool:
 def update_cache_dir() -> Path:
     """Where downloaded installers wait for the user to install them."""
     from launcher import platform as _platform
+    from launcher.data.paths import sandbox_cache_dir, sandbox_enabled
+
+    if sandbox_enabled():
+        # Dev runs stay inside the project sandbox.
+        return sandbox_cache_dir() / "updates"
 
     if _platform.is_windows():
         # cache_home() is already app-specific on Windows.

@@ -68,6 +68,8 @@ class Account:
     user_id: int = 0
     display_name: str = ""
     friend_code: str = ""
+    #: Human label for this install in the devices list.
+    device_name: str = ""
     #: Identifies this install's sessions, so ids never clash across PCs.
     client_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     #: The largest local session id uploaded so far.
@@ -82,33 +84,118 @@ class Account:
         return bool(self.token)
 
 
+PROFILE_EXPORT_VERSION = 1
+
+
 class AccountFile:
     """friends.json: holds a token, so it is readable by its owner only."""
 
     def __init__(self, paths: Paths) -> None:
         self._path = paths.friends_file
+        #: Keys from a newer version, kept so downgrades don't discard them.
+        self._extra: dict[str, Any] = {}
 
-    def load(self) -> Account:
-        try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return Account()
+    def _candidates(self) -> list[Any]:
+        return [
+            self._path,
+            self._path.with_suffix(".json.bak"),
+            self._path.parent / "friends.json.pre-profile-v2.bak",
+        ]
+
+    def _parse(self, raw: object) -> Account | None:
         if not isinstance(raw, dict):
-            return Account()
+            return None
         known = {k: v for k, v in raw.items() if k in Account.__dataclass_fields__}
         try:
-            return Account(**known)
+            account = Account(**known)
         except TypeError:
-            return Account()
+            return None
+        self._extra = {k: v for k, v in raw.items() if k not in Account.__dataclass_fields__}
+        return account
+
+    def load(self) -> Account:
+        self._extra = {}
+        for candidate in self._candidates():
+            try:
+                raw = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            account = self._parse(raw)
+            if account is not None:
+                # A backup saved the day: restore it as the primary file so
+                # the next save doesn't need the fallback again.
+                if candidate != self._path:
+                    with contextlib.suppress(OSError):
+                        self.save(account)
+                return account
+        return Account()
 
     def save(self, account: Account) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        if self._path.is_file():
+            # One backup generation + one pre-upgrade copy, kept once.
+            # The live file is never truncated before its copy lands.
+            with contextlib.suppress(OSError):
+                import shutil
+
+                shutil.copy2(self._path, self._path.with_suffix(".json.bak"))
+                pre = self._path.parent / "friends.json.pre-profile-v2.bak"
+                if not pre.is_file():
+                    shutil.copy2(self._path, pre)
+        payload = {**self._extra, **asdict(account)}
         tmp = self._path.with_suffix(".json.tmp")
         # Created private rather than chmod-ed after: never readable by others.
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(asdict(account), handle, indent=2)
+            json.dump(payload, handle, indent=2)
         tmp.replace(self._path)
+
+    # -- portable backup -------------------------------------------------
+
+    def export_profile(
+        self,
+        account: Account,
+        dest: Any,
+        *,
+        server_url: str = "",
+        recovery_key: str = "",
+    ) -> Any:
+        """Write a portable recovery file (0600). Returns the path."""
+        from pathlib import Path as _Path
+
+        dest = _Path(dest)
+        payload: dict[str, Any] = {
+            "version": PROFILE_EXPORT_VERSION,
+            "server": server_url or account.server,
+            "user_id": account.user_id,
+            "display_name": account.display_name,
+            "friend_code": account.friend_code,
+            "token": account.token,
+            "client_id": account.client_id,
+            "uploaded_through": account.uploaded_through,
+            "exported": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        }
+        if recovery_key:
+            payload["recovery_key"] = recovery_key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(dest.suffix + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2)
+        tmp.replace(dest)
+        return dest
+
+    @staticmethod
+    def read_export(dest: Any) -> dict[str, Any]:
+        from pathlib import Path as _Path
+
+        raw = json.loads(_Path(dest).read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("profile file must be a JSON object")
+        for key in ("server", "token"):
+            if not isinstance(raw.get(key), str) or not str(raw.get(key)).strip():
+                raise ValueError(f"profile file is missing {key!r}")
+        return raw
 
 
 class FriendsService(QObject):
@@ -142,6 +229,8 @@ class FriendsService(QObject):
         self._status = FriendsState.OFFLINE
         self._snapshot: FriendsSnapshot | None = None
         self._started = False
+        #: Recovery key shown once after register/rotate, until saved.
+        self._pending_recovery_key = ""
 
         self._tasks = TaskGroup(self)
         self._tasks.finished.connect(self._on_task_finished)
@@ -221,6 +310,8 @@ class FriendsService(QObject):
             self.state_changed.emit(status)
 
     def _is_live(self) -> bool:
+        if self._status is FriendsState.RECOVERY:
+            return False
         return self._client is not None and self.registered_here
 
     # -- lifetime --------------------------------------------------------
@@ -322,12 +413,28 @@ class FriendsService(QObject):
         self, error: FriendsError, fail: Callable[[FriendsError], None] | None
     ) -> None:
         if isinstance(error, AuthError):
-            self._forget_account()
-            self.notice.emit(str(error))
+            # Never wipe on a 401: the DB may have been restored, the wrong
+            # --db picked, or the device revoked. Keep the local copy so a
+            # backup or recovery key can bring the same user_id back.
+            self._enter_recovery(str(error))
+            if fail is not None:
+                fail(error)
         elif fail is not None:
             fail(error)
         else:
             self.notice.emit(str(error))
+
+    def _enter_recovery(self, message: str = "") -> None:
+        """Park in RECOVERY, keeping token/client_id/uploaded_through."""
+        self.stop()
+        self._presence = None
+        if self.online_mode and self._started:
+            self._set_state(FriendsState.RECOVERY)
+        if message:
+            self.notice.emit(
+                f"{message}. Your play history is safe here;"
+                " restore a profile backup or reclaim with your recovery key."
+            )
 
     # -- polling ---------------------------------------------------------
 
@@ -379,6 +486,9 @@ class FriendsService(QObject):
     def _on_refresh_failed(self, error: FriendsError) -> None:
         self._refreshing = False
         self._refresh_again = False
+        if isinstance(error, AuthError):
+            # _handle_error already parked us in RECOVERY; don't override.
+            return
         self._failures += 1
         self._set_state(FriendsState.UNREACHABLE)
         if not isinstance(error, ServerUnreachableError):
@@ -409,20 +519,33 @@ class FriendsService(QObject):
             return
         url = self._normalised_url()
         client = self._client
+        from launcher import platform as _platform
 
         def done(result: dict[str, Any]) -> None:
             # A fresh profile starts its upload from the beginning.
+            # uploaded_through resets (new user_id), but client_id stays so
+            # session ids keep their shape across re-registers on this PC.
             self._account = Account(
                 server=url,
                 token=str(result.get("token", "")),
                 user_id=int(result.get("user_id", 0)),
                 display_name=str(result.get("display_name", name)),
                 friend_code=str(result.get("friend_code", "")),
+                device_name=_platform.device_name(),
                 client_id=self._account.client_id,
+                uploaded_through=0,
             )
             self._save_account()
             if self._client is not None:
                 self._client.token = self._account.token
+            recovery = str(result.get("recovery_key", ""))
+            if recovery:
+                self._pending_recovery_key = recovery
+                self.notice.emit(
+                    "Profile created. Save your recovery key now"
+                    " (Friends → Show recovery key) — it restores this exact"
+                    f" profile if this file is lost. Code: {self._account.friend_code}"
+                )
             self._set_state(FriendsState.CONNECTING)
             self._after_connect()
 
@@ -463,10 +586,11 @@ class FriendsService(QObject):
         self._run(client.delete_account, ok=done, fail=failed)
 
     def _forget_account(self) -> None:
-        """Drop the token: the server no longer knows it, or it was deleted."""
+        """Explicit delete only: drop the token after the user confirmed."""
         self.stop()
         self._presence = None
         self._snapshot = None
+        self._pending_recovery_key = ""
         self._account = Account(client_id=self._account.client_id)
         self._save_account()
         if self._client is not None:
@@ -477,6 +601,122 @@ class FriendsService(QObject):
     def _save_account(self) -> None:
         with contextlib.suppress(OSError):
             self._file.save(self._account)
+
+    # -- backup / recovery -------------------------------------------------
+
+    @property
+    def pending_recovery_key(self) -> str:
+        """A recovery key shown once, until the user saves it."""
+        return self._pending_recovery_key
+
+    def export_profile(self, dest: Any, *, recovery_key: str = "") -> Any:
+        """Write a portable backup of this profile. Returns the path."""
+        key = recovery_key or self._pending_recovery_key
+        return self._file.export_profile(
+            self._account, dest, server_url=self._normalised_url(), recovery_key=key
+        )
+
+    def import_profile_data(self, data: dict[str, Any]) -> Account:
+        """Adopt a profile backup, preserving upload cursor when possible.
+
+        Full exports carry client_id + uploaded_through, so re-importing on
+        the same machine is idempotent. Bare reclaim responses (no cursor)
+        are treated as a new device: the cursor jumps to the local tip so
+        existing local sessions aren't re-uploaded as duplicates.
+        """
+        from launcher import platform as _platform
+        from launcher.services.friends_client import check_url
+
+        server = str(data.get("server") or "").strip().rstrip("/")
+        token = str(data.get("token") or "").strip()
+        if not server or not token:
+            raise ValueError("profile file is missing server/token")
+        try:
+            server = check_url(server)
+        except ValueError:
+            raise ValueError(f"profile server address is not valid: {server!r}") from None
+        try:
+            user_id = int(data.get("user_id") or 0)
+        except (TypeError, ValueError):
+            user_id = 0
+        imported_client = str(data.get("client_id") or "")
+        imported_cursor = data.get("uploaded_through")
+        try:
+            imported_cursor = int(imported_cursor if imported_cursor is not None else -1)
+        except (TypeError, ValueError):
+            imported_cursor = -1
+        if imported_client and imported_cursor >= 0:
+            client_id, cursor = imported_client, imported_cursor
+        else:
+            # New device without a cursor: don't re-upload local history.
+            client_id = self._account.client_id or imported_client or uuid.uuid4().hex[:12]
+            try:
+                cursor = self._state.last_session_id()
+            except (OSError, ValueError):
+                cursor = 0
+        self._account = Account(
+            server=server,
+            token=token,
+            user_id=user_id,
+            display_name=str(data.get("display_name") or ""),
+            friend_code=str(data.get("friend_code") or ""),
+            device_name=_platform.device_name(),
+            client_id=client_id,
+            uploaded_through=cursor,
+        )
+        self._save_account()
+        self._pending_recovery_key = str(data.get("recovery_key") or "")
+        self._snapshot = None
+        self._failures = 0
+        self._apply_mode()
+        return self._account
+
+    def import_profile_file(self, dest: Any) -> Account:
+        return self.import_profile_data(AccountFile.read_export(dest))
+
+    def rotate_recovery(self) -> None:
+        """Mint a fresh recovery key; the tab shows it once via notice."""
+        if not self._is_live() or self._client is None:
+            self.notice.emit("Go online first, then ask for a recovery key.")
+            return
+        client = self._client
+
+        def done(key: object) -> None:
+            self._pending_recovery_key = str(key)
+            self.notice.emit(
+                "New recovery key — save it now (it is shown only here):"
+                f" {self._pending_recovery_key}"
+            )
+
+        self._run(client.rotate_recovery, ok=done)
+
+    def reclaim(self, friend_code: str, recovery_key: str) -> None:
+        """Restore the same user_id on this install with code + recovery key."""
+        if self._client is None:
+            self.notice.emit("Set the server address first.")
+            return
+        from launcher.domain.friends import format_code as _fmt
+
+        client = self._client
+        code = _fmt(friend_code)
+        key = recovery_key.strip()
+        if not key:
+            self.notice.emit("Enter your recovery key.")
+            return
+
+        def done(result: dict[str, Any]) -> None:
+            payload = dict(result)
+            payload["server"] = self._normalised_url()
+            # No cursor in a reclaim response: import treats it as a new
+            # device and pins the cursor to the local tip.
+            self.import_profile_data(payload)
+            self.notice.emit("Profile restored — same name, code, friends and history.")
+
+        def failed(error: FriendsError) -> None:
+            self.notice.emit(str(error))
+
+        self._set_state(FriendsState.CONNECTING)
+        self._run(client.reclaim, code, key, ok=done, fail=failed)
 
     # -- friends ---------------------------------------------------------
 

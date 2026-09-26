@@ -683,6 +683,18 @@ class FriendsView(QScrollArea):
             self._name_edit.setEnabled(True)
             self._server_hint.setText(f"Server: {self._service.server_url}")
             self._show_page(_UNREGISTERED)
+        elif state is FriendsState.RECOVERY:
+            self._banner.setText(
+                "This profile isn't recognised by the server — nothing was deleted here."
+                " Restore a profile backup (milso-launcher --import-profile FILE)"
+                " or reclaim with your friend code + recovery key, then restart."
+                " Your local play history is untouched."
+            )
+            self._banner.show()
+            self._register_btn.setEnabled(True)
+            self._name_edit.setEnabled(True)
+            self._server_hint.setText(f"Server: {self._service.server_url}")
+            self._show_page(_UNREGISTERED)
         elif state is FriendsState.CONNECTING:
             self._connecting_label.setText(f"Connecting to {self._service.server_url}…")
             self._show_page(_CONNECTING)

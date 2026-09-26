@@ -99,15 +99,18 @@ def _session(raw: object) -> SessionIn:
 
 
 def _register(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
-    user, token = store.register(
+    device_name = str(req.body.get("device_name") or "this PC")[:64]
+    user, token, recovery_key = store.register(
         _text(req.body.get("display_name"), "display_name", MAX_NAME),
         _platform(req.body.get("platform")),
+        device_name,
     )
     return HTTPStatus.CREATED, {
         "user_id": user.id,
         "display_name": user.display_name,
         "friend_code": user.friend_code,
         "token": token,
+        "recovery_key": recovery_key,
     }
 
 
@@ -201,6 +204,69 @@ def _leaderboard(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
     return HTTPStatus.OK, {"rows": store.leaderboard(req.me, _since(req.query), game)}
 
 
+def _devices(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
+    return HTTPStatus.OK, {"devices": store.list_devices(req.me.id)}
+
+
+def _revoke_device(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
+    try:
+        device_id = int(req.params[0])
+    except (IndexError, ValueError):
+        raise _bad("device id must be a whole number") from None
+    if not store.revoke_device(req.me.id, device_id):
+        raise NotFoundError
+    return HTTPStatus.NO_CONTENT, None
+
+
+def _rotate_recovery(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
+    return HTTPStatus.OK, {"recovery_key": store.issue_recovery(req.me.id)}
+
+
+def _reclaim(store: Store, req: Request) -> tuple[HTTPStatus, Any]:
+    # Unauthenticated but gated: wrong code/key looks the same as unknown
+    # code, and callers should rate-limit (see _RECLAIM_ATTEMPTS below).
+    code = _text(req.body.get("friend_code") or req.body.get("code"), "friend_code", 16)
+    key = req.body.get("recovery_key")
+    if not isinstance(key, str) or not key.strip():
+        raise _bad("recovery_key is required")
+    device_name = str(req.body.get("device_name") or "new device")[:64]
+    if not _reclaim_allowed():
+        raise ApiError(HTTPStatus.TOO_MANY_REQUESTS, "too_many_requests", "try again later")
+    result = store.reclaim(code, key.strip(), device_name)
+    if result is None:
+        _reclaim_note_failure()
+        # Same answer whether the code or the key was wrong.
+        raise ApiError(HTTPStatus.UNAUTHORIZED, "unauthorized")
+    user, token = result
+    return HTTPStatus.OK, {
+        "user_id": user.id,
+        "display_name": user.display_name,
+        "friend_code": user.friend_code,
+        "token": token,
+    }
+
+
+#: Naive in-process brake for the unauthenticated reclaim endpoint.
+_RECLAIM_WINDOW = 300.0
+_RECLAIM_MAX = 20
+_RECLAIM_ATTEMPTS: list[float] = []
+
+
+def _reclaim_allowed() -> bool:
+    import time as _time
+
+    now = _time.time()
+    while _RECLAIM_ATTEMPTS and _RECLAIM_ATTEMPTS[0] < now - _RECLAIM_WINDOW:
+        _RECLAIM_ATTEMPTS.pop(0)
+    return len(_RECLAIM_ATTEMPTS) < _RECLAIM_MAX
+
+
+def _reclaim_note_failure() -> None:
+    import time as _time
+
+    _RECLAIM_ATTEMPTS.append(_time.time())
+
+
 Handler = Callable[[Store, Request], tuple[HTTPStatus, Any]]
 
 #: (method, path pattern, needs a token, handler)
@@ -208,9 +274,13 @@ ROUTES: list[tuple[str, re.Pattern[str], bool, Handler]] = [
     (method, re.compile(f"^{pattern}$"), auth, handler)
     for method, pattern, auth, handler in (
         ("POST", "/v1/register", False, _register),
+        ("POST", "/v1/devices/reclaim", False, _reclaim),
         ("GET", "/v1/me", True, _me),
         ("PATCH", "/v1/me", True, _rename),
         ("DELETE", "/v1/me", True, _delete_me),
+        ("GET", "/v1/devices", True, _devices),
+        ("DELETE", r"/v1/devices/(\d+)", True, _revoke_device),
+        ("POST", "/v1/recovery/rotate", True, _rotate_recovery),
         ("POST", "/v1/requests", True, _send_request),
         ("GET", "/v1/requests", True, _requests),
         ("POST", r"/v1/requests/(\d+)/accept", True, _answer(True)),

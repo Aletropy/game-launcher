@@ -37,3 +37,6 @@ __pycache__/
 
 # The friends server's database, when run from the checkout
 /friends-server.db*
+
+# Dev sandbox: project-local settings/playtime/cache for ./run.sh
+/.sandbox/

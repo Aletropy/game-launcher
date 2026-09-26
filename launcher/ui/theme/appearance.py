@@ -192,8 +192,13 @@ def notifier() -> _Notifier:
 
 def _icon_dir() -> Path:
     """Per-user, so another account cannot plant files in it."""
-    cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    directory = Path(cache) / "launcher" / "theme"
+    from launcher.data.paths import sandbox_cache_dir, sandbox_enabled
+
+    if sandbox_enabled():
+        directory = sandbox_cache_dir() / "theme"
+    else:
+        cache = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+        directory = Path(cache) / "launcher" / "theme"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

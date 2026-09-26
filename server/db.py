@@ -7,6 +7,7 @@ writer at a time is what SQLite wants anyway.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import secrets
 import sqlite3
@@ -71,7 +72,27 @@ _MIGRATIONS = (
     "ALTER TABLE sessions ADD COLUMN platform TEXT NOT NULL DEFAULT 'linux'",
 )
 
-_USER_VERSION = 1
+#: v2 adds devices + recovery_keys. users.token_hash is kept for one
+#: release as a fallback so old clients/servers keep working, then dropped.
+_USER_VERSION = 2
+
+_DEVICE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS devices (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash   TEXT NOT NULL UNIQUE,
+    device_name  TEXT NOT NULL DEFAULT 'legacy',
+    created      INTEGER NOT NULL,
+    last_seen    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
+
+CREATE TABLE IF NOT EXISTS recovery_keys (
+    user_id   INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    key_hash  TEXT NOT NULL UNIQUE,
+    created   INTEGER NOT NULL
+);
+"""
 
 #: Presence outlives its last heartbeat by this long; launchers beat
 #: every minute, so a crashed launcher drops off within a few.
@@ -138,14 +159,20 @@ class Store:
 
     def __init__(self, path: Path | str) -> None:
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
+        self._path = str(path)
+        self._conn = sqlite3.connect(self._path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(_SCHEMA)
         self._migrate()
         version = self._conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < _USER_VERSION:
-            self._conn.execute(f"PRAGMA user_version = {_USER_VERSION}")
+        if version < 1:
+            self._conn.execute("PRAGMA user_version = 1")
+            version = 1
+        if version < 2:
+            self._backup_before_devices_migration()
+            self._migrate_devices()
+            self._conn.execute("PRAGMA user_version = 2")
         self._conn.commit()
 
     def _migrate(self) -> None:
@@ -158,15 +185,67 @@ class Store:
                     raise
         self._conn.commit()
 
+    def _backup_before_devices_migration(self) -> None:
+        """Copy the DB file aside before the v2 migration, once."""
+        import shutil
+        import time as _time
+
+        try:
+            source = Path(self._path)
+        except (TypeError, ValueError):
+            return
+        # :memory: and non-existent paths have nothing to back up.
+        if not source.is_file():
+            return
+        if source.name == ":memory:":
+            return
+        stamp = _time.strftime("%Y-%m-%d_%H%M%S")
+        target = source.parent / f"{source.name}.pre-devices-{stamp}.bak"
+        suffix = 1
+        while target.exists():
+            suffix += 1
+            target = source.parent / f"{source.name}.pre-devices-{stamp}-{suffix}.bak"
+        try:
+            # Checkpoint first so the copy is consistent even with WAL.
+            with self._lock, contextlib.suppress(sqlite3.OperationalError):
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            shutil.copy2(source, target)
+        except OSError:
+            pass
+
+    def _migrate_devices(self) -> None:
+        """Create devices + recovery tables and adopt legacy tokens.
+
+        Idempotent: re-running copies any users.token_hash missing from
+        devices, so upgrades never lose a login and never duplicate one.
+        users.token_hash is kept for one release as a fallback.
+        """
+        with self._lock:
+            self._conn.executescript(_DEVICE_SCHEMA)
+            self._conn.execute(
+                "INSERT OR IGNORE INTO devices"
+                " (user_id, token_hash, device_name, created, last_seen)"
+                " SELECT id, token_hash, 'legacy', created, last_seen FROM users"
+            )
+            self._conn.commit()
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
 
     # -- accounts --------------------------------------------------------
 
-    def register(self, display_name: str, platform: str = "linux") -> tuple[User, str]:
-        """A new user and the token that proves it. The token is not kept."""
+    def register(
+        self, display_name: str, platform: str = "linux", device_name: str = "this PC"
+    ) -> tuple[User, str, str]:
+        """A new user, its device token, and a once-only recovery key.
+
+        The token and recovery key are not kept; only their hashes are.
+        users.token_hash is still written for one release so downgraded
+        servers keep working.
+        """
         token = secrets.token_urlsafe(32)
+        recovery_key = secrets.token_urlsafe(32)
         now = int(time.time())
         platform = normalise_platform(platform)
         with self._lock:
@@ -182,21 +261,55 @@ class Store:
                 except sqlite3.IntegrityError:
                     continue  # A code collision; draw again.
                 break
+            assert cursor.lastrowid is not None
+            user_id = int(cursor.lastrowid)
+            self._conn.execute(
+                "INSERT INTO devices"
+                " (user_id, token_hash, device_name, created, last_seen)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (user_id, hash_token(token), device_name or "this PC", now, now),
+            )
+            self._conn.execute(
+                "INSERT OR REPLACE INTO recovery_keys (user_id, key_hash, created)"
+                " VALUES (?, ?, ?)",
+                (user_id, hash_token(recovery_key), now),
+            )
             self._conn.commit()
-        assert cursor.lastrowid is not None
-        return User(cursor.lastrowid, display_name, code, platform), token
+        return User(user_id, display_name, code, platform), token, recovery_key
 
     def authenticate(self, token: str) -> User | None:
         now = int(time.time())
+        digest = hash_token(token)
         with self._lock:
             row = self._conn.execute(
-                "SELECT id, display_name, friend_code,"
-                " COALESCE(platform, 'linux') AS platform FROM users"
-                " WHERE token_hash = ?",
-                (hash_token(token),),
+                "SELECT u.id, u.display_name, u.friend_code,"
+                " COALESCE(u.platform, 'linux') AS platform FROM devices d"
+                " JOIN users u ON u.id = d.user_id WHERE d.token_hash = ?",
+                (digest,),
             ).fetchone()
             if row is None:
-                return None
+                # Fallback for one release: pre-v2 tokens living only in
+                # users.token_hash (e.g. DB restored from backup mid-rollout).
+                row = self._conn.execute(
+                    "SELECT id, display_name, friend_code,"
+                    " COALESCE(platform, 'linux') AS platform FROM users"
+                    " WHERE token_hash = ?",
+                    (digest,),
+                ).fetchone()
+                if row is None:
+                    return None
+                # Adopt it so the next login hits devices directly.
+                with contextlib.suppress(sqlite3.OperationalError):
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO devices"
+                        " (user_id, token_hash, device_name, created, last_seen)"
+                        " VALUES (?, ?, 'legacy', ?, ?)",
+                        (row["id"], digest, now, now),
+                    )
+            else:
+                self._conn.execute(
+                    "UPDATE devices SET last_seen = ? WHERE token_hash = ?", (now, digest)
+                )
             self._conn.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, row["id"]))
             self._conn.commit()
         return User(row["id"], row["display_name"], row["friend_code"], row["platform"])
@@ -213,6 +326,197 @@ class Store:
         with self._lock:
             self._conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
             self._conn.commit()
+
+    # -- admin: listing ----------------------------------------------------
+
+    def list_users(self, limit: int = 100, order: str = "last_seen") -> list[dict[str, Any]]:
+        """All users for the admin CLI. Never includes token hashes."""
+        queries = {
+            "last_seen": "SELECT id, display_name, friend_code, created, last_seen,"
+            " COALESCE(platform, 'linux') AS platform FROM users"
+            " ORDER BY last_seen DESC LIMIT ?",
+            "created": "SELECT id, display_name, friend_code, created, last_seen,"
+            " COALESCE(platform, 'linux') AS platform FROM users"
+            " ORDER BY created DESC LIMIT ?",
+            "name": "SELECT id, display_name, friend_code, created, last_seen,"
+            " COALESCE(platform, 'linux') AS platform FROM users"
+            " ORDER BY display_name ASC LIMIT ?",
+        }
+        query = queries.get(order, queries["last_seen"])
+        with self._lock:
+            rows = self._conn.execute(
+                query,
+                (max(1, min(limit, 10000)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def search_users(self, text: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Find users by name fragment or exact friend code."""
+        code = normalise_code(text)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, display_name, friend_code, created, last_seen,"
+                " COALESCE(platform, 'linux') AS platform FROM users"
+                " WHERE display_name LIKE ? ESCAPE '\\' OR friend_code = ?"
+                " ORDER BY last_seen DESC LIMIT ?",
+                (f"%{text.replace('%', '').replace('_', '')}%", code, max(1, min(limit, 500))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_user(self, ref: str) -> dict[str, Any] | None:
+        """One user by id or friend code, with device/session/friend counts."""
+        with self._lock:
+            row: sqlite3.Row | None = None
+            if ref.isdigit():
+                row = self._conn.execute(
+                    "SELECT id, display_name, friend_code, created, last_seen,"
+                    " COALESCE(platform, 'linux') AS platform FROM users WHERE id = ?",
+                    (int(ref),),
+                ).fetchone()
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT id, display_name, friend_code, created, last_seen,"
+                    " COALESCE(platform, 'linux') AS platform FROM users"
+                    " WHERE friend_code = ?",
+                    (normalise_code(ref),),
+                ).fetchone()
+            if row is None:
+                return None
+            user_id = int(row["id"])
+            try:
+                devices = int(
+                    self._conn.execute(
+                        "SELECT COUNT(*) FROM devices WHERE user_id = ?", (user_id,)
+                    ).fetchone()[0]
+                )
+            except sqlite3.OperationalError:
+                devices = 1
+            sessions = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE user_id = ?", (user_id,)
+                ).fetchone()[0]
+            )
+            friends = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) FROM friendships WHERE user_a = ? OR user_b = ?",
+                    (user_id, user_id),
+                ).fetchone()[0]
+            )
+        return {**dict(row), "devices": devices, "sessions": sessions, "friends": friends}
+
+    # -- devices + recovery ------------------------------------------------
+
+    def list_devices(self, user_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT id, device_name, created, last_seen FROM devices"
+                    " WHERE user_id = ? ORDER BY last_seen DESC",
+                    (user_id,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return [{"id": 0, "device_name": "legacy", "created": 0, "last_seen": 0}]
+        return [dict(row) for row in rows]
+
+    def _add_device(self, user_id: int, token: str, device_name: str) -> int:
+        now = int(time.time())
+        cursor = self._conn.execute(
+            "INSERT INTO devices (user_id, token_hash, device_name, created, last_seen)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (user_id, hash_token(token), device_name or "new device", now, now),
+        )
+        return int(cursor.lastrowid or 0)
+
+    def revoke_device(self, user_id: int, device_id: int) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM devices WHERE id = ? AND user_id = ?", (device_id, user_id)
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    def issue_recovery(self, user_id: int) -> str:
+        """Mint a fresh recovery key, replacing the old one. Returns it once."""
+        key = secrets.token_urlsafe(32)
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO recovery_keys (user_id, key_hash, created)"
+                " VALUES (?, ?, ?)",
+                (user_id, hash_token(key), int(time.time())),
+            )
+            self._conn.commit()
+        return key
+
+    def reset_token(self, ref: str, device_name: str = "recovery") -> tuple[User, str] | None:
+        """Admin/clinical re-issue: a new device token for the same user.
+
+        Keeps user_id, friend_code, friends and sessions. Returns the user
+        and the once-only plaintext token.
+        """
+        token = secrets.token_urlsafe(32)
+        now = int(time.time())
+        with self._lock:
+            row: sqlite3.Row | None = None
+            if ref.isdigit():
+                row = self._conn.execute(
+                    "SELECT id, display_name, friend_code,"
+                    " COALESCE(platform, 'linux') AS platform FROM users WHERE id = ?",
+                    (int(ref),),
+                ).fetchone()
+            if row is None:
+                row = self._conn.execute(
+                    "SELECT id, display_name, friend_code,"
+                    " COALESCE(platform, 'linux') AS platform FROM users"
+                    " WHERE friend_code = ?",
+                    (normalise_code(ref),),
+                ).fetchone()
+            if row is None:
+                return None
+            user_id = int(row["id"])
+            self._conn.execute(
+                "INSERT INTO devices (user_id, token_hash, device_name, created, last_seen)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (user_id, hash_token(token), device_name, now, now),
+            )
+            # Keep the legacy column working for one release.
+            with contextlib.suppress(sqlite3.OperationalError):
+                self._conn.execute(
+                    "UPDATE users SET token_hash = ?, last_seen = ? WHERE id = ?",
+                    (hash_token(token), now, user_id),
+                )
+            self._conn.commit()
+        return User(user_id, row["display_name"], row["friend_code"], row["platform"]), token
+
+    def reclaim(
+        self, code: str, recovery_key: str, device_name: str = "new device"
+    ) -> tuple[User, str] | None:
+        """Self-service restore: friend_code + recovery key -> new device token."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, display_name, friend_code,"
+                " COALESCE(platform, 'linux') AS platform FROM users WHERE friend_code = ?",
+                (normalise_code(code),),
+            ).fetchone()
+            if row is None:
+                return None
+            user_id = int(row["id"])
+            try:
+                stored = self._conn.execute(
+                    "SELECT key_hash FROM recovery_keys WHERE user_id = ?", (user_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+            if stored is None or stored["key_hash"] != hash_token(recovery_key):
+                return None
+            token = secrets.token_urlsafe(32)
+            now = int(time.time())
+            self._conn.execute(
+                "INSERT INTO devices (user_id, token_hash, device_name, created, last_seen)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (user_id, hash_token(token), device_name or "new device", now, now),
+            )
+            self._conn.commit()
+        return User(user_id, row["display_name"], row["friend_code"], row["platform"]), token
 
     # -- friendships -----------------------------------------------------
 

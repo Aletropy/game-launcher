@@ -13,6 +13,80 @@ from pathlib import Path
 #: launcher/data/paths.py -> launcher/data -> launcher -> <project root>
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
+#: Set MILSO_SANDBOX=1 to run this checkout without touching the real
+#: per-user locations (~/.config/milso-launcher and
+#: ~/.local/share/milso-launcher). Settings, playtime and cache then live
+#: in <project>/.sandbox instead, so dev runs cannot disturb the installed
+#: app. MILSO_SANDBOX_DIR overrides where that sandbox lives.
+#: ./run.sh sets this for you; the installed command does not.
+SANDBOX_ENV = "MILSO_SANDBOX"
+SANDBOX_DIR_ENV = "MILSO_SANDBOX_DIR"
+SANDBOX_DIRNAME = ".sandbox"
+
+
+def sandbox_enabled() -> bool:
+    """Whether dev runs should stay inside the project sandbox."""
+    import os
+
+    return os.environ.get(SANDBOX_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def sandbox_root() -> Path:
+    """Where the dev sandbox lives. Never touches real user data."""
+    import os
+
+    override = os.environ.get(SANDBOX_DIR_ENV, "").strip()
+    if override:
+        return Path(override)
+    return PROJECT_ROOT / SANDBOX_DIRNAME
+
+
+def sandbox_cache_dir() -> Path:
+    """Sandbox equivalent of the per-user cache dir."""
+    return sandbox_root() / "cache"
+
+
+def seed_sandbox_from_production() -> list[str]:
+    """One-time copy of prod settings/state into the sandbox.
+
+    Copies settings.json, themes/ and state.db (plus any -wal/-shm
+    sidecars) when the sandbox lacks them. Never writes to the real
+    locations; friends.json (the server identity) is deliberately left
+    behind. Close the installed app first so state.db copies cleanly.
+    Returns the sandbox-relative paths it created.
+    """
+    import shutil
+
+    prod = Paths.production()
+    box = Paths.sandbox()
+    copied: list[str] = []
+
+    def _copy_file(source: Path, dest: Path, rel: str) -> None:
+        if dest.exists() or not source.is_file():
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+        copied.append(rel)
+
+    _copy_file(prod.settings_file, box.settings_file, "config/settings.json")
+    if prod.themes_dir.is_dir():
+        for item in sorted(prod.themes_dir.glob("*.json")):
+            _copy_file(item, box.themes_dir / item.name, f"config/themes/{item.name}")
+    _copy_file(prod.state_db, box.state_db, "data/state.db")
+    if (box.state_db).is_file():
+        for suffix in ("-wal", "-shm"):
+            _copy_file(
+                prod.state_db.parent / (prod.state_db.name + suffix),
+                box.state_db.parent / (box.state_db.name + suffix),
+                f"data/{box.state_db.name}{suffix}",
+            )
+    return copied
+
 
 @dataclass(frozen=True)
 class Paths:
@@ -27,7 +101,28 @@ class Paths:
 
     @classmethod
     def default(cls) -> Paths:
-        """The real locations, honouring the XDG variables."""
+        """The real locations, honouring the XDG variables.
+
+        Returns the project sandbox when MILSO_SANDBOX=1 (see ./run.sh),
+        so dev runs never touch the installed app's data.
+        """
+        if sandbox_enabled():
+            return cls.sandbox()
+        return cls.production()
+
+    @classmethod
+    def sandbox(cls) -> Paths:
+        """Everything project-local: games were already, config/data now too."""
+        root = sandbox_root()
+        return cls(
+            base=PROJECT_ROOT,
+            config=root / "config",
+            data=root / "data",
+        )
+
+    @classmethod
+    def production(cls) -> Paths:
+        """The installed locations, honouring the XDG variables."""
         import contextlib
         import shutil
 

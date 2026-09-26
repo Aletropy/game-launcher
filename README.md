@@ -143,6 +143,20 @@ Games can also be launched straight from the shell:
 launch would use — the quickest way to check a game's configuration
 without a running Steam Flatpak.
 
+## Developing
+
+`./run.sh` runs this checkout in an isolated sandbox: settings, playtime
+and cache live in `.sandbox/` inside the project, never in
+`~/.config/milso-launcher` or `~/.local/share/milso-launcher`, so dev runs
+cannot disturb the installed app — both can even run side by side. Games,
+Saves/, prefixes and artwork are already project-local and shared.
+
+```bash
+./run.sh              # sandboxed dev run
+./run.sh --seed       # one-time copy of prod settings + playtime
+MILSO_SANDBOX=0 ./run.sh   # dev code, real user data
+```
+
 ## Architecture
 
 ```
@@ -560,6 +574,24 @@ or nginx) and keep the token database (`--db`) on a backed-up volume;
 the server itself is stateless apart from that file. Tokens are stored
 hashed on the server, and in
 `~/.config/milso-launcher/friends.json` (mode 0600) on each client.
+
+Profiles survive losing that file. Registering shows a recovery key
+once — save it. The same `user_id` and friend code come back with:
+
+```bash
+python -m server --db friends-server.db admin users list
+python -m server --db friends-server.db admin users search gabriel
+python -m server --db friends-server.db admin users show ATTR-295Z
+python -m server --db friends-server.db admin users reset-token ATTR-295Z \
+  --server http://10.0.0.25:8765 --out /tmp/opencode/profile.json
+milso-launcher --import-profile /tmp/opencode/profile.json
+milso-launcher --export-profile ~/profile-backup.json
+```
+
+Upgrading keeps every login: the `devices` migration is additive and
+idempotent, backs the DB up to `friends-server.db.pre-devices-*.bak`,
+and old clients keep working for one release (`users.token_hash` is
+kept as a fallback, then dropped).
 
 ## Updates
 

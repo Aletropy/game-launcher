@@ -1,6 +1,6 @@
 [project]
 name = "milso-launcher"
-version = "2.6.0"
+version = "2.7.0"
 description = "Milso Launcher for running Windows games through Proton"
 requires-python = ">=3.11"
 dependencies = ["PySide6>=6.6.0", "pypresence>=4.3.0"]
@@ -38,7 +38,8 @@ ignore = [
 # URLs come from the SteamGridDB API, not from user input.
 "launcher/services/sgdb.py" = ["S310"]
 # The test runner deliberately catches everything and asserts freely.
-"tests/*" = ["S101", "BLE001", "PLR2004", "S603", "S607", "PLW0603", "RUF015", "DTZ001"]
+# Fake tokens in tests are not secrets.
+"tests/*" = ["S101", "S105", "S106", "BLE001", "PLR2004", "S603", "S607", "PLW0603", "RUF015", "DTZ001"]
 
 [tool.mypy]
 python_version = "3.11"

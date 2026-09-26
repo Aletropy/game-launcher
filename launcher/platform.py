@@ -34,6 +34,19 @@ def app_platform() -> str:
     return name if name in ("windows", "linux") else "unknown"
 
 
+def device_name() -> str:
+    """A human label for this install, for the devices list."""
+    import socket
+
+    try:
+        host = socket.gethostname().strip()
+    except (OSError, AttributeError):
+        host = ""
+    if host:
+        return host[:64]
+    return "this PC"
+
+
 def config_home() -> Path:
     override = os.environ.get("XDG_CONFIG_HOME")
     if override:

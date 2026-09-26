@@ -2393,7 +2393,7 @@ def friends_service_survives_an_unreachable_server() -> None:
     with sandbox() as ctx:
         # A port nothing listens on.
         url = "http://127.0.0.1:9"
-        ctx.friends._account = Account(server=url, token="t")  # noqa: S106
+        ctx.friends._account = Account(server=url, token="t")
         ctx.settings.update({"friends_mode": "online", "friends_server_url": url})
         ctx.friends.start()
         pump(lambda: ctx.friends.state is FriendsState.UNREACHABLE)

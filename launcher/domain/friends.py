@@ -31,6 +31,9 @@ class FriendsState(Enum):
     ONLINE = "online"
     #: Online, but the server did not answer; retrying.
     UNREACHABLE = "unreachable"
+    #: The server no longer recognises the token. Nothing was wiped;
+    #: restore a backup or reclaim with the recovery key.
+    RECOVERY = "recovery"
 
 
 class BoardPeriod(Enum):

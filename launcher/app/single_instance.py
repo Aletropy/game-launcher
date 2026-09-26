@@ -26,8 +26,13 @@ def _default_names() -> tuple[Path, str]:
         uid = os.getuid()
     except AttributeError:  # pragma: no cover - non-POSIX
         uid = 0
-    lock = Path(tempfile.gettempdir()) / f"milso-launcher-{uid}.lock"
-    return lock, f"milso-launcher-{uid}"
+    from launcher.data.paths import sandbox_enabled
+
+    # The dev sandbox gets its own lock, so it can run side by side with
+    # the installed app instead of forwarding to it and exiting.
+    tag = "milso-launcher-dev" if sandbox_enabled() else "milso-launcher"
+    lock = Path(tempfile.gettempdir()) / f"{tag}-{uid}.lock"
+    return lock, f"{tag}-{uid}"
 
 
 class SingleInstance(QObject):

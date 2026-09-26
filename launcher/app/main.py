@@ -40,6 +40,10 @@ def parse_launch_request(argv: list[str]) -> tuple[str | None, bool]:
         arg = args.pop(0)
         if arg == "--profile":
             profile = True
+        elif arg in ("--import-profile", "--export-profile"):
+            # Handled headless in maybe_handle_profile_cli() before Qt starts.
+            if args and not args[0].startswith("-"):
+                args.pop(0)
         elif arg == "--play" and args:
             game = args.pop(0)
         elif arg == "--play":
@@ -49,7 +53,102 @@ def parse_launch_request(argv: list[str]) -> tuple[str | None, bool]:
     return game, profile
 
 
+def _profile_cli_args(argv: list[str]) -> tuple[str | None, str | None]:
+    import_profile = export_profile = None
+    i = 0
+    while i < len(args := argv):
+        if args[i] == "--import-profile" and i + 1 < len(args):
+            import_profile = args[i + 1]
+            i += 2
+        elif args[i] == "--export-profile" and i + 1 < len(args):
+            export_profile = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    return import_profile, export_profile
+
+
+def _import_profile_file(store: object, paths: object, src: str) -> None:
+    """Adopt a profile backup, keeping the local upload cursor when missing."""
+    import json
+
+    from launcher.data.state_store import StateStore
+    from launcher.services.friends import Account, AccountFile
+    from launcher.services.friends_client import check_url
+
+    assert isinstance(store, AccountFile)
+    try:
+        data = dict(AccountFile.read_export(src))
+    except (OSError, ValueError, json.JSONDecodeError) as e:
+        print(f"import failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    account = store.load()
+    try:
+        state = StateStore(paths.state_db)  # type: ignore[attr-defined]
+        try:
+            tip = state.last_session_id()
+        finally:
+            state.close()
+    except (OSError, ValueError):
+        tip = 0
+    try:
+        cursor = int(data.get("uploaded_through", -1))
+    except (TypeError, ValueError):
+        cursor = -1
+    if not str(data.get("client_id") or "") or cursor < 0:
+        data["client_id"] = account.client_id or str(data.get("client_id") or "")
+        data["uploaded_through"] = max(account.uploaded_through, tip)
+    try:
+        server = check_url(str(data["server"]).strip().rstrip("/"))
+    except ValueError as e:
+        print(f"import failed: {e}", file=sys.stderr)
+        sys.exit(1)
+    new_account = Account(
+        server=server,
+        token=str(data.get("token") or ""),
+        user_id=int(data.get("user_id") or 0),
+        display_name=str(data.get("display_name") or ""),
+        friend_code=str(data.get("friend_code") or ""),
+        client_id=str(data.get("client_id") or account.client_id),
+        uploaded_through=int(data.get("uploaded_through") or 0),
+    )
+    store.save(new_account)
+    print(f"imported profile for {new_account.display_name} ({new_account.friend_code})")
+    if data.get("recovery_key"):
+        print("recovery key included — store it somewhere safe, then delete this file.")
+
+
+def maybe_handle_profile_cli(argv: list[str] | None = None) -> bool:
+    """Handle --import-profile/--export-profile without starting Qt.
+
+    Returns True when a profile command ran (the caller should exit).
+    """
+    from pathlib import Path
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    import_profile, export_profile = _profile_cli_args(args)
+    if not import_profile and not export_profile:
+        return False
+    from launcher.data.paths import Paths
+    from launcher.services.friends import AccountFile
+
+    paths = Paths.default()
+    store = AccountFile(paths)
+    if import_profile:
+        _import_profile_file(store, paths, import_profile)
+    if export_profile:
+        account = store.load()
+        if not account.registered:
+            print("no profile to export (not registered)", file=sys.stderr)
+            sys.exit(1)
+        store.export_profile(account, Path(export_profile), server_url=account.server)
+        print(f"exported profile for {account.display_name} to {export_profile} (0600)")
+    return True
+
+
 def main() -> None:
+    if maybe_handle_profile_cli():
+        sys.exit(0)
     app = QApplication(sys.argv)
     app.setApplicationName("Milso Launcher")
     app.setApplicationDisplayName("Milso Launcher")

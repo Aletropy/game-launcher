@@ -121,7 +121,35 @@ class FriendsClient:
         return self._call(
             "POST",
             "/v1/register",
-            {"display_name": display_name, "platform": _platform.app_platform()},
+            {
+                "display_name": display_name,
+                "platform": _platform.app_platform(),
+                "device_name": _platform.device_name(),
+            },
+        )
+
+    def devices(self) -> list[dict[str, Any]]:
+        result = self._call("GET", "/v1/devices")
+        return list((result or {}).get("devices") or [])
+
+    def revoke_device(self, device_id: int) -> None:
+        self._call("DELETE", f"/v1/devices/{int(device_id)}")
+
+    def rotate_recovery(self) -> str:
+        result = self._call("POST", "/v1/recovery/rotate", {})
+        return str((result or {}).get("recovery_key", ""))
+
+    def reclaim(self, friend_code: str, recovery_key: str, device_name: str = "") -> dict[str, Any]:
+        from launcher import platform as _platform
+
+        return self._call(
+            "POST",
+            "/v1/devices/reclaim",
+            {
+                "friend_code": friend_code,
+                "recovery_key": recovery_key,
+                "device_name": device_name or _platform.device_name(),
+            },
         )
 
     def me(self) -> dict[str, Any]:
